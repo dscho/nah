@@ -32,6 +32,7 @@ dev = ["pytest"]
 config = ["pyyaml>=6.0"]
 keys = ["keyring>=25.0"]
 docs = ["mkdocs-material>=9.0"]
+powershell = ["tree-sitter>=0.25", "tree-sitter-powershell>=0.26"]
 
 [project.scripts]
 nah = "nah.cli:main"
