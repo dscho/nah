@@ -394,10 +394,6 @@ def _parse_stage(stage_text: str) -> _Stage:
         cmdlet = text[start:i].lower()
         break
 
-    # Strip the optional .exe suffix for native commands like cmd.exe.
-    if cmdlet.endswith(".exe"):
-        cmdlet = cmdlet[:-4]
-
     return _Stage(cmdlet=cmdlet, raw=text, has_dynamic=has_dynamic)
 
 
