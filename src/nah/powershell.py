@@ -131,6 +131,18 @@ _ASK_CMDLETS: frozenset[str] = frozenset({
     "invoke-command", "icm",
     "enter-pssession", "etsn",
     "new-pssession", "nsn",
+    # Scriptblock-executing cmdlets — the script body is opaque to a
+    # static check, so each invocation needs a human in the loop.
+    "start-job", "sajb",
+    "start-threadjob",
+    "invoke-job",
+    "wait-job", "wjb",
+    "receive-job", "rcjb",
+    "register-objectevent",
+    "register-engineevent",
+    "register-wmievent",
+    "new-event",
+    "trace-command",
 })
 
 
