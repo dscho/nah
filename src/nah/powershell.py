@@ -261,6 +261,21 @@ def _split_statements(text: str) -> list[str]:
             current = []
             i += 1
             continue
+        # PowerShell 7+ chain operators `&&` (run-if-success) and `||`
+        # (run-if-failure) are statement separators, not pipelines. A
+        # token sequence like `Get-Date && Remove-Item -Recurse /` is
+        # two distinct statements that the classifier must inspect
+        # independently; otherwise the right-hand side hides behind
+        # the safe-looking left-hand side.
+        if (ch in ("&", "|")
+                and i + 1 < len(text)
+                and text[i + 1] == ch
+                and depth_brace == 0
+                and depth_paren == 0):
+            parts.append("".join(current).strip())
+            current = []
+            i += 2
+            continue
         current.append(ch)
         i += 1
     tail = "".join(current).strip()
@@ -315,16 +330,11 @@ def _parse_pipeline(statement: str) -> list[_Stage]:
             current.append(ch)
             i += 1
             continue
-        # `||` is the PowerShell pipeline-chain operator (run-if-failure),
-        # not a pipe. `|` alone is the object pipeline.
+        # The pipeline operator is the single `|`. PowerShell 7's `||`
+        # short-circuit chain operator looks similar but is a
+        # statement separator, not a pipeline stage — it is handled
+        # in _split_statements and never reaches this function.
         if ch == "|" and depth_brace == 0 and depth_paren == 0:
-            if i + 1 < len(statement) and statement[i + 1] == "|":
-                # `||` short-circuit chain — mark as dynamic and treat
-                # both halves as separate stages so each gets classified.
-                stages_raw.append("".join(current).strip())
-                current = []
-                i += 2
-                continue
             stages_raw.append("".join(current).strip())
             current = []
             i += 1
