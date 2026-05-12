@@ -1,7 +1,8 @@
 """Agent support — tool name mapping, agent detection, output formatting.
 
-Supports Claude Code hooks and Codex permission-hook logging. The hook script
-detects the calling agent from payload fields and formats output accordingly.
+Supports Claude Code hooks, Codex permission-hook logging, and GitHub
+Copilot CLI preToolUse hooks. The hook script detects the calling agent
+from payload fields and formats output accordingly.
 """
 
 from pathlib import Path
@@ -26,8 +27,54 @@ TOOL_MAP: dict[str, str] = {
 }
 
 
-def normalize_tool(tool_name: str) -> str:
-    """Map agent-specific tool name to canonical handler name."""
+# Per-agent tool-name normalization tables.
+# Kept separate from the global TOOL_MAP so a Copilot lowercase name like
+# "grep" cannot accidentally bypass a future Claude-side handler keyed on
+# the same lowercase token, and vice versa.
+_AGENT_TOOL_MAPS: dict[str, dict[str, str]] = {
+    # Claude Code uses PascalCase identity mapping (same as TOOL_MAP).
+    "claude": dict(TOOL_MAP),
+    # Codex shares Claude tool names plus apply_patch.
+    "codex": {**TOOL_MAP, "apply_patch": "apply_patch"},
+    # GitHub Copilot CLI uses lowercase tool names; map them to nah's
+    # canonical handler names. See:
+    # https://docs.github.com/en/copilot/reference/hooks-reference#tool-names-for-hook-matching
+    "copilot": {
+        "bash": "Bash",
+        # NOTE: powershell maps to a placeholder canonical, not Bash.
+        # PowerShell has fundamentally different syntax from POSIX shells:
+        # object pipelines, cmdlets (Remove-Item vs rm), named parameters,
+        # `;`-separated statements, no $IFS word-splitting, etc. Routing it
+        # through the Bash classifier would either miss real threats (e.g.
+        # `Remove-Item -Recurse -Force /`) or produce false positives. Until
+        # a real PowerShell classifier exists, the copilot_hooks dispatcher
+        # treats this canonical as ASK by default. See plan.md
+        # "MUST-DO: real PowerShell classifier".
+        "powershell": "PowerShell",
+        "view": "Read",
+        "create": "Write",
+        "edit": "Edit",
+        "glob": "Glob",
+        "grep": "Grep",
+        # Copilot-specific tools with no Claude analog:
+        "web_fetch": "web_fetch",
+        "task": "task",
+        "ask_user": "ask_user",
+    },
+}
+
+
+def normalize_tool(tool_name: str, agent: str = "") -> str:
+    """Map agent-specific tool name to canonical handler name.
+
+    When ``agent`` is provided, uses the per-agent mapping table.
+    When omitted (legacy callers), falls back to the shared TOOL_MAP for
+    backward compatibility.
+    """
+    if agent:
+        agent_map = _AGENT_TOOL_MAPS.get(agent)
+        if agent_map is not None:
+            return agent_map.get(tool_name, tool_name)
     return TOOL_MAP.get(tool_name, tool_name)
 
 
@@ -38,6 +85,7 @@ def normalize_tool(tool_name: str) -> str:
 # Agent type constants
 CLAUDE = "claude"
 CODEX = "codex"
+COPILOT = "copilot"
 
 
 def detect_agent(data) -> str:
@@ -60,6 +108,14 @@ def format_block(reason: str, agent: str) -> dict:
         color=_agent_color_mode(agent),
         assume_tty=agent == CLAUDE,
     )
+    if agent == COPILOT:
+        # Copilot CLI preToolUse expects a bare top-level object — no
+        # hookSpecificOutput envelope.
+        # https://docs.github.com/en/copilot/reference/hooks-reference#pretooluse-decision-control
+        result: dict = {"permissionDecision": "deny"}
+        if branded:
+            result["permissionDecisionReason"] = branded
+        return result
     result: dict = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}}
     if branded:
         result["hookSpecificOutput"]["permissionDecisionReason"] = branded
@@ -74,6 +130,14 @@ def format_ask(reason: str, agent: str, system_message: str = "") -> dict:
         color=_agent_color_mode(agent),
         assume_tty=agent == CLAUDE,
     )
+    if agent == COPILOT:
+        result: dict = {"permissionDecision": "ask"}
+        if branded:
+            result["permissionDecisionReason"] = branded
+        # Copilot has no equivalent of Claude's top-level systemMessage,
+        # so the reason carries the only user-visible signal. The
+        # system_message is therefore dropped for Copilot.
+        return result
     result: dict = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask"}}
     if branded:
         result["hookSpecificOutput"]["permissionDecisionReason"] = branded
@@ -84,6 +148,8 @@ def format_ask(reason: str, agent: str, system_message: str = "") -> dict:
 
 def format_allow(agent: str) -> dict:
     """Format an allow response for the given agent."""
+    if agent == COPILOT:
+        return {"permissionDecision": "allow"}
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
 
 
@@ -93,6 +159,8 @@ def format_error(error: str, agent: str) -> dict:
         f"nah: internal error — blocked for safety: {error}\n"
         "      To bypass: nah uninstall | To debug: nah log --tail"
     )
+    if agent == COPILOT:
+        return {"permissionDecision": "deny", "permissionDecisionReason": msg}
     return {"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
@@ -126,10 +194,34 @@ AGENT_SETTINGS: dict[str, Path] = {
     CLAUDE: Path.home() / ".claude" / "settings.json",
 }
 
+
+def copilot_hooks_dir() -> Path:
+    """Return the Copilot CLI user-level hooks directory.
+
+    Honors COPILOT_HOME when set, otherwise defaults to ~/.copilot/hooks/.
+    See:
+    https://docs.github.com/en/copilot/reference/hooks-configuration#hooks-locations
+    """
+    import os
+
+    home = os.environ.get("COPILOT_HOME") or str(Path.home() / ".copilot")
+    return Path(home) / "hooks"
+
+
+def copilot_settings_path() -> Path:
+    """Return the Copilot CLI user-level settings.json path."""
+    import os
+
+    home = os.environ.get("COPILOT_HOME") or str(Path.home() / ".copilot")
+    return Path(home) / "settings.json"
+
+
 # Agents whose config format we can auto-install into.
 INSTALLABLE_AGENTS = {CLAUDE}
 
 AGENT_NAMES: dict[str, str] = {
     CLAUDE: "Claude Code",
     CODEX: "OpenAI Codex",
+    COPILOT: "GitHub Copilot CLI",
 }
+
