@@ -298,25 +298,20 @@ def _decide(payload: dict) -> tuple[dict, str, dict]:
 def _classify(canonical: str, tool_input: dict, raw_tool_name: str) -> dict:
     """Run nah's shared classifier against a normalized payload."""
 
-    # PowerShell: fail-safe ASK. PowerShell has its own syntax (cmdlets,
-    # object pipelines, named parameters, aliases that collide with
-    # POSIX names) and is unsafe to feed into the Bash tokenizer.
-    # Replace with a real PowerShell classifier before treating this as
-    # complete; see plan.md "MUST-DO".
+    # PowerShell: run the minimal PowerShell classifier rather than the
+    # Bash tokenizer. The two languages share almost no syntax (object
+    # pipelines vs text streams, cmdlets vs POSIX commands, named
+    # parameters like -Recurse vs flags, aliases like `ls` that mean
+    # Get-ChildItem rather than /bin/ls). See nah.powershell for the
+    # conservative allowlist of read-only cmdlets and the denylist of
+    # eval-pattern cmdlets like Invoke-Expression.
     if raw_tool_name == "powershell":
-        return {
-            "decision": taxonomy.ASK,
-            "reason": (
-                "Copilot powershell: no PowerShell classifier yet; "
-                "asking for confirmation (fail-safe)"
-            ),
-            "_meta": {"stages": [{
-                "action_type": taxonomy.UNKNOWN,
-                "decision": taxonomy.ASK,
-                "policy": taxonomy.ASK,
-                "reason": "powershell classifier not implemented",
-            }]},
-        }
+        from nah.powershell import classify_powershell
+
+        command = tool_input.get("command") or ""
+        if not isinstance(command, str):
+            command = str(command)
+        return classify_powershell(command)
 
     # ask_user: harmless prompt to the user, never tool execution.
     if raw_tool_name == "ask_user":
