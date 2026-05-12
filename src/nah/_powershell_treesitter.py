@@ -312,31 +312,59 @@ def _classify_command(node, name: str, source: bytes) -> tuple[str, str, dict]:
                 f"PowerShell uses output redirection nah cannot inspect (stage: {raw})",
                 _stage_meta(name, "ask", source, node))
 
-    # Type-method invocation, parenthesized expressions, script blocks,
-    # subexpressions, array subexpressions — anything that could execute
-    # arbitrary code under the guise of an argument.
+    # Type-method invocation, parenthesized expressions, subexpressions,
+    # array subexpressions — anything that could execute arbitrary code
+    # under the guise of an argument. Script blocks are handled
+    # separately via _collect_script_block_statement_lists so their
+    # bodies can be classified instead of treated as opaque.
     if elements is not None and _has_dynamic_argument(elements):
         return ("ask",
                 f"PowerShell uses dynamic content nah cannot inspect (stage: {raw})",
                 _stage_meta(name, "ask", source, node))
 
+    # Resolve the cmdlet's own verdict first.
     if not name:
-        return ("ask",
-                f"PowerShell stage with no recognizable cmdlet: {raw}",
-                _stage_meta("", "ask", source, node))
-    if name in _DENY_CMDLETS:
-        return ("block",
-                f"PowerShell cmdlet not permitted: {name}",
-                _stage_meta(name, "block", source, node))
-    if name in _ASK_CMDLETS:
-        return ("ask",
-                f"PowerShell cmdlet needs review: {name}",
-                _stage_meta(name, "ask", source, node))
-    if name in _SAFE_CMDLETS:
-        return ("allow", "", _stage_meta(name, "allow", source, node))
-    return ("ask",
+        cmd_decision: tuple[str, str, dict] = (
+            "ask",
+            f"PowerShell stage with no recognizable cmdlet: {raw}",
+            _stage_meta("", "ask", source, node),
+        )
+    elif name in _DENY_CMDLETS:
+        cmd_decision = (
+            "block",
+            f"PowerShell cmdlet not permitted: {name}",
+            _stage_meta(name, "block", source, node),
+        )
+    elif name in _ASK_CMDLETS:
+        cmd_decision = (
+            "ask",
+            f"PowerShell cmdlet needs review: {name}",
+            _stage_meta(name, "ask", source, node),
+        )
+    elif name in _SAFE_CMDLETS:
+        cmd_decision = ("allow", "", _stage_meta(name, "allow", source, node))
+    else:
+        cmd_decision = (
+            "ask",
             f"unrecognized PowerShell cmdlet: {name}",
-            _stage_meta(name, "ask", source, node))
+            _stage_meta(name, "ask", source, node),
+        )
+
+    # Recurse into any script block arguments. The script body's
+    # decision composes with the command's own — the worst verdict
+    # wins, but a safe-cmdlet host with a benign script block stays
+    # ALLOW. The recursion makes
+    # `Where-Object { Remove-Item -Recurse / }` correctly become ASK
+    # ("PowerShell cmdlet needs review: remove-item") instead of the
+    # less informative "PowerShell uses dynamic content" message that
+    # the hand-rolled scanner has to fall back to.
+    decision, reason, stage = cmd_decision
+    for stmt_list in _collect_script_block_statement_lists(elements):
+        inner_decision, inner_reason = _classify_statement_list(stmt_list, source)
+        decision = _stricter(decision, inner_decision)
+        if inner_reason:
+            reason = f"{reason}; {inner_reason}" if reason else inner_reason
+    return decision, reason, stage
 
 
 def _cmdlet_name(command_node, source: bytes) -> str:
@@ -353,7 +381,6 @@ def _cmdlet_name(command_node, source: bytes) -> str:
 
 
 _DYNAMIC_NODE_TYPES = frozenset({
-    "script_block_expression",
     "invokation_expression",
     "sub_expression",
     "array_expression",
@@ -362,11 +389,56 @@ _DYNAMIC_NODE_TYPES = frozenset({
 
 
 def _has_dynamic_argument(elements_node) -> bool:
-    """Return True if any descendant of command_elements is dynamic."""
+    """Return True if any descendant of command_elements is dynamic.
+
+    ``script_block_expression`` is handled separately by
+    :func:`_collect_script_block_statement_lists` so the inner script
+    body can be classified rather than treated as opaque dynamic
+    content.
+    """
     for desc in _iter_descendants(elements_node):
         if desc.type in _DYNAMIC_NODE_TYPES:
             return True
     return False
+
+
+def _collect_script_block_statement_lists(elements_node) -> list:
+    """Return every statement_list nested inside a script block argument.
+
+    A command like ``Where-Object { Remove-Item C:\\tmp }`` parses to a
+    command with a ``script_block_expression`` arg. The grammar nests
+    its body as ``script_block_expression`` → ``script_block`` →
+    ``script_block_body`` → ``statement_list``. Returning the
+    statement_list lets the caller recursively classify what the block
+    actually does rather than treat every script block as ASK.
+    """
+    if elements_node is None:
+        return []
+    found = []
+    for desc in _iter_descendants(elements_node):
+        if desc.type == "script_block_expression":
+            stmt_list = _find_first(desc, "statement_list")
+            if stmt_list is not None:
+                found.append(stmt_list)
+    return found
+
+
+def _classify_statement_list(stmt_list, source: bytes) -> tuple[str, str]:
+    """Reduce a statement_list to a single (decision, reason) pair.
+
+    Used to classify the body of a script block argument recursively.
+    The stage records are intentionally collapsed to a single summary
+    string here — the parent command's stage record is what gets
+    logged.
+    """
+    worst = "allow"
+    reasons: list[str] = []
+    for stmt in _iter_named_children(stmt_list):
+        decision, reason, _stage = _classify_statement(stmt, source)
+        worst = _stricter(worst, decision)
+        if reason:
+            reasons.append(reason)
+    return worst, "; ".join(reasons)
 
 
 # ---------------------------------------------------------------------------
