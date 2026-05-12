@@ -363,58 +363,121 @@ _DYNAMIC_MARKERS = (
 
 
 def _parse_stage(stage_text: str) -> _Stage:
-    """Extract the cmdlet name and dynamic-content flag for one stage."""
+    """Extract the cmdlet name and dynamic-content flag for one stage.
+
+    A stage is "dynamic" if anything inside it (outside quoted strings)
+    could execute arbitrary code that the static check cannot inspect.
+    The classifier conservatively marks the stage dynamic when it
+    encounters:
+
+    - script blocks ``{ ... }`` — the body is opaque code that
+      Where-Object, ForEach-Object, Start-Job, calculated properties,
+      and similar cmdlets evaluate at runtime,
+    - type literals or member access ``[Namespace.Type]::Method``,
+    - parenthesized expressions ``( ... )`` that may wrap a command,
+    - the call operator ``& $var`` or ``& 'cmd'`` that runs a value
+      as a command,
+    - subexpressions ``$(...)``, array subexpressions ``@(...)``, and
+      braced variable names ``${...}``.
+
+    These are deliberately coarse: parens around a value
+    (`-Path (Get-Location)`) are flagged the same as parens wrapping a
+    dangerous expression. The cost is a false-positive ASK for
+    legitimate uses; the benefit is that no hidden code execution
+    slips through to ALLOW.
+    """
     text = stage_text.strip()
     has_dynamic = False
-
-    # Detect dynamic constructs before tokenization. Variable expansion
-    # alone ($var) is fine when it appears as an argument to a safe
-    # cmdlet, but `&`, `$(...)`, `@(...)` change what command runs.
-    for marker in ("$(", "@(", "${"):
-        if marker in text:
-            has_dynamic = True
-            break
-    # Call operator: `& 'something'` or `& $var` invokes a dynamic
-    # command. A bare `&` at the start of the stage is the call
-    # operator; `&&` is the run-if-success chain operator.
-    if text.startswith("& ") or text.startswith("&\t") or text == "&":
-        has_dynamic = True
-
-    # Tokenize: walk to first non-whitespace token that does not start
-    # with `-` (parameter), `$` (variable), `'`/`"` (literal), `[` (type
-    # cast), or `(` (group). That token is the cmdlet name.
     cmdlet = ""
+
+    # Walk character-by-character outside of single/double-quoted runs.
+    # Inside a quoted string the same characters are literal and must
+    # not trigger the dynamic markers.
+    in_str = ""  # '"' or "'" or ""
     i = 0
-    while i < len(text):
+    n = len(text)
+    cmdlet_start = -1
+    cmdlet_done = False
+
+    while i < n:
         ch = text[i]
-        if ch in (" ", "\t"):
-            i += 1
-            continue
-        if ch == "&":
-            i += 1
-            continue
-        # Variable assignment: `$x = ...` — strip the LHS so we look at
-        # the right-hand command. Common pattern: `$out = Get-Date`.
-        if ch == "$":
-            eq = text.find("=", i)
-            if eq != -1 and eq < len(text) - 1:
-                i = eq + 1
+        if in_str:
+            # Backtick escape inside double-quoted strings only.
+            if ch == "`" and in_str == '"' and i + 1 < n:
+                i += 2
                 continue
-            has_dynamic = True
-            break
-        if ch in ("'", '"'):
-            # The stage starts with a literal — unusual. Mark dynamic.
-            has_dynamic = True
-            break
-        if ch in ("[", "("):
-            has_dynamic = True
-            break
-        # Read the cmdlet token.
-        start = i
-        while i < len(text) and text[i] not in (" ", "\t", "\n"):
+            if ch == in_str:
+                in_str = ""
             i += 1
-        cmdlet = text[start:i].lower()
-        break
+            continue
+        if ch in ('"', "'"):
+            in_str = ch
+            i += 1
+            continue
+
+        # Subexpression markers: $(...), @(...), ${...}.
+        if ch == "$" and i + 1 < n and text[i + 1] == "(":
+            has_dynamic = True
+            i += 2
+            continue
+        if ch == "@" and i + 1 < n and text[i + 1] == "(":
+            has_dynamic = True
+            i += 2
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "{":
+            has_dynamic = True
+            i += 2
+            continue
+
+        # Script block / type literal / parenthesized expression.
+        if ch in ("{", "[", "("):
+            has_dynamic = True
+            i += 1
+            continue
+
+        # Call operator. A bare `&` outside quotes runs the next token
+        # as a command. The chain operators `&&` and `||` are already
+        # split off at the statement level, so any `&` reaching this
+        # function is the call operator.
+        if ch == "&":
+            has_dynamic = True
+            i += 1
+            continue
+
+        # Cmdlet name: the first non-whitespace token after any leading
+        # `& ` (which we skip above) and after any variable assignment
+        # (`$x = ...`). We capture it once.
+        if not cmdlet_done and ch not in (" ", "\t", "\n"):
+            if ch == "$":
+                # Plain local variable assignment of the form `$name = ...`
+                # is the only assignment pattern we treat as transparent;
+                # `$env:Path = ...`, `$global:foo = ...`, and provider-
+                # qualified variables are mutations that must be ASK-ed.
+                # The split between "plain" and "scoped" is handled in a
+                # separate commit.
+                eq = text.find("=", i)
+                if eq != -1 and eq < n - 1 and ":" not in text[i + 1: eq]:
+                    i = eq + 1
+                    while i < n and text[i] in (" ", "\t"):
+                        i += 1
+                    continue
+                # Any non-assignment use of a variable as the first
+                # token is dynamic — we cannot know what it expands to.
+                has_dynamic = True
+                cmdlet_done = True
+                i += 1
+                continue
+            # Read the cmdlet token.
+            cmdlet_start = i
+            while i < n and text[i] not in (" ", "\t", "\n"):
+                ch2 = text[i]
+                if ch2 in ('"', "'", "{", "[", "(", "$", "@", "&", "`"):
+                    break
+                i += 1
+            cmdlet = text[cmdlet_start:i].lower()
+            cmdlet_done = True
+            continue
+        i += 1
 
     return _Stage(cmdlet=cmdlet, raw=text, has_dynamic=has_dynamic)
 
