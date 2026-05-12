@@ -321,6 +321,188 @@ def _agent_keys_for_target(target: str) -> list[str]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# Copilot CLI install/update/uninstall (separate from Claude flow)
+# ---------------------------------------------------------------------------
+
+
+_COPILOT_HOOK_FILE_NAME = "nah.json"
+
+
+def _copilot_hook_command_field() -> str:
+    """Return the bash command string for Copilot's preToolUse hook entry."""
+    exe = str(sys.executable).replace("\\", "/")
+    return f"{shlex.quote(exe)} -m nah.cli _copilot-pre-tool-use"
+
+
+def _copilot_hook_powershell_field() -> str:
+    """Return the PowerShell command string for Copilot's preToolUse hook entry."""
+    exe = str(sys.executable).replace("\\", "/")
+    # PowerShell takes the same module invocation; the shell wraps it.
+    return f"& '{exe}' -m nah.cli _copilot-pre-tool-use"
+
+
+def _copilot_hook_payload() -> dict:
+    """Return the JSON config nah writes to ~/.copilot/hooks/nah.json.
+
+    Uses the VS Code-compatible event name (PascalCase ``PreToolUse``) so
+    Copilot delivers the snake_case payload (tool_name, tool_input) that
+    most closely matches Claude's shape.
+    """
+    return {
+        "version": 1,
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "type": "command",
+                    "bash": _copilot_hook_command_field(),
+                    "powershell": _copilot_hook_powershell_field(),
+                    "timeoutSec": 10,
+                }
+            ]
+        },
+    }
+
+
+def _copilot_hook_file_path() -> Path:
+    return agents.copilot_hooks_dir() / _COPILOT_HOOK_FILE_NAME
+
+
+def _is_nah_copilot_hook_entry(entry) -> bool:
+    """Recognize a hook entry as nah-owned by its command marker."""
+    from nah.copilot_run import _NAH_HOOK_MARKER  # avoid duplication
+
+    if not isinstance(entry, dict):
+        return False
+    for field in ("bash", "command", "powershell"):
+        value = entry.get(field)
+        if isinstance(value, str) and _NAH_HOOK_MARKER in value:
+            return True
+    return False
+
+
+def _read_copilot_hook_file(path: Path) -> dict | None:
+    """Read a Copilot hook config file; return None when absent or malformed."""
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        # Surface but do not crash — the install/update flows print a
+        # warning and continue with the assumption that the file is
+        # corrupt and needs replacement.
+        sys.stderr.write(f"nah: copilot: cannot parse {path}: {exc}\n")
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _install_copilot() -> None:
+    """Install nah's preToolUse hook for Copilot CLI."""
+    hooks_dir = agents.copilot_hooks_dir()
+    hook_file = _copilot_hook_file_path()
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = _copilot_hook_payload()
+    if hook_file.exists():
+        backup = hook_file.with_suffix(".json.bak")
+        try:
+            backup.write_text(hook_file.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError as exc:
+            # Backup is best-effort; the install proceeds even when
+            # backup cannot be written so a broken hook file does not
+            # leave the user unguarded.
+            sys.stderr.write(f"nah: copilot: backup failed: {exc}\n")
+
+    with open(hook_file, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+    if _supports_posix_chmod():
+        os.chmod(hook_file, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 444
+
+    print(f"nah {__version__} installed for GitHub Copilot CLI:")
+    print(f"  Hook file: {hook_file} (read-only)")
+    print(f"  Interpreter: {sys.executable}")
+    print()
+    print("Restart any running Copilot CLI sessions so the new hook is picked up.")
+
+
+def _update_copilot() -> None:
+    """Rewrite the Copilot hook file with the current Python interpreter path."""
+    hook_file = _copilot_hook_file_path()
+    if not hook_file.exists():
+        print(f"nah update copilot: hook file not found ({hook_file}).")
+        print("Run `nah install copilot` first.")
+        return
+
+    existing = _read_copilot_hook_file(hook_file)
+    if existing is not None:
+        pre_tool_use = existing.get("hooks", {}).get("PreToolUse")
+        is_nah = False
+        if isinstance(pre_tool_use, list):
+            is_nah = any(_is_nah_copilot_hook_entry(entry) for entry in pre_tool_use)
+        if not is_nah:
+            print(
+                f"nah update copilot: {hook_file} exists but does not "
+                "reference nah. Refusing to overwrite a foreign hook file.",
+                file=sys.stderr,
+            )
+            print(
+                "Remove the file manually if you want nah to manage it.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+    # Unlock → overwrite → re-lock, matching Claude's update flow.
+    if _supports_posix_chmod():
+        os.chmod(hook_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    payload = _copilot_hook_payload()
+    with open(hook_file, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    if _supports_posix_chmod():
+        os.chmod(hook_file, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+
+    print(f"nah {__version__} updated for GitHub Copilot CLI:")
+    print(f"  Hook file: {hook_file} (re-locked read-only)")
+    print(f"  Interpreter: {sys.executable}")
+
+
+def _uninstall_copilot() -> None:
+    """Remove nah's Copilot CLI hook file."""
+    hook_file = _copilot_hook_file_path()
+    if not hook_file.exists():
+        print(f"  GitHub Copilot CLI: {hook_file} (not found — nothing to remove)")
+        print("nah uninstalled.")
+        return
+
+    existing = _read_copilot_hook_file(hook_file)
+    if existing is not None:
+        pre_tool_use = existing.get("hooks", {}).get("PreToolUse")
+        is_nah = False
+        if isinstance(pre_tool_use, list):
+            is_nah = any(_is_nah_copilot_hook_entry(entry) for entry in pre_tool_use)
+        if not is_nah:
+            print(
+                f"nah uninstall copilot: {hook_file} exists but does not "
+                "reference nah. Refusing to delete a foreign hook file.",
+                file=sys.stderr,
+            )
+            print("Remove the file manually if you want it gone.", file=sys.stderr)
+            raise SystemExit(1)
+
+    if _supports_posix_chmod():
+        try:
+            os.chmod(hook_file, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError as exc:
+            sys.stderr.write(f"nah: copilot: chmod failed: {exc}\n")
+    hook_file.unlink()
+    print(f"  GitHub Copilot CLI: {hook_file} (deleted)")
+    print("nah uninstalled.")
+
+
+
 def _write_hook_script() -> None:
     """Write the shared hook shim script (used by all agents)."""
     _HOOKS_DIR.mkdir(parents=True, exist_ok=True)
@@ -387,6 +569,10 @@ def cmd_install(args: argparse.Namespace) -> None:
         terminal_guard.install_shell(target.key)
         print(f"nah {__version__} installed for {target.key}.")
         _print_shell_reload_hint(target.key)
+        return
+
+    if target.key == targets.COPILOT:
+        _install_copilot()
         return
 
     agent_keys = _agent_keys_for_target(target.key)
@@ -466,6 +652,10 @@ def cmd_update(args: argparse.Namespace) -> None:
         terminal_guard.update_shell(target.key)
         print(f"nah {__version__} terminal guard updated for {target.key}.")
         _print_shell_reload_hint(target.key)
+        return
+
+    if target.key == targets.COPILOT:
+        _update_copilot()
         return
 
     agent_keys = _agent_keys_for_target(target.key)
@@ -972,6 +1162,10 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         print(f"nah terminal guard uninstalled for {target.key}.")
         return
 
+    if target.key == targets.COPILOT:
+        _uninstall_copilot()
+        return
+
     agent_keys = _agent_keys_for_target(target.key)
 
     state = _detect_install_state(agent_keys)
@@ -998,12 +1192,17 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         else:
             print(f"  {agent_name}: settings not found (nothing to clean)")
 
-    # 2. Remove hook script only if no other agents still have nah hooks
+    # 2. Remove hook script only if no other agents still have nah hooks.
+    # Only check agents whose install model uses the shared Claude-style
+    # PreToolUse shim — Copilot CLI installs its own standalone hook file
+    # and is irrelevant to the shim's lifecycle.
     any_remaining = False
     for key in agents.INSTALLABLE_AGENTS:
         if key in agent_keys:
             continue
-        sf = agents.AGENT_SETTINGS[key]
+        sf = agents.AGENT_SETTINGS.get(key)
+        if sf is None:
+            continue
         if sf.exists():
             try:
                 data = _read_settings(sf)
@@ -1819,6 +2018,10 @@ def main():
         from nah.codex_hooks import main as codex_hooks_main
 
         raise SystemExit(codex_hooks_main(default_hook_event="PostToolUse"))
+    if len(sys.argv) >= 2 and sys.argv[1] == "_copilot-pre-tool-use":
+        from nah.copilot_hooks import main as copilot_hooks_main
+
+        raise SystemExit(copilot_hooks_main())
 
     parser = argparse.ArgumentParser(
         prog="nah",
@@ -1838,7 +2041,7 @@ def main():
         "target",
         nargs="?",
         metavar="target",
-        help="Required target: claude, bash, zsh, or pwsh. Codex uses nah run codex",
+        help="Required target: claude, copilot, bash, zsh, or pwsh. Codex uses nah run codex",
     )
     install_parser.add_argument(
         "--force",
@@ -1854,7 +2057,7 @@ def main():
         "target",
         nargs="?",
         metavar="target",
-        help="Required target: claude, bash, zsh, or pwsh. Codex uses nah run codex",
+        help="Required target: claude, copilot, bash, zsh, or pwsh. Codex uses nah run codex",
     )
     uninstall_parser = sub.add_parser(
         "uninstall",
@@ -1865,7 +2068,7 @@ def main():
         "target",
         nargs="?",
         metavar="target",
-        help="Required target: claude, bash, zsh, or pwsh. Codex uses nah run codex",
+        help="Required target: claude, copilot, bash, zsh, or pwsh. Codex uses nah run codex",
     )
     test_parser = sub.add_parser("test", help="Dry-run classification for a command")
     test_parser.add_argument("--target", default=None, help="Target policy to simulate")
@@ -1929,13 +2132,14 @@ def main():
     untrust_project_parser = sub.add_parser("untrust-project", help="Remove project config trust")
     untrust_project_parser.add_argument("path", nargs="?", help="Project directory to untrust (default: active project or cwd)")
     status_parser = sub.add_parser("status", help="Show custom rules or target status")
-    status_parser.add_argument("target", nargs="?", help="Optional target: claude, bash, zsh, pwsh")
+    status_parser.add_argument("target", nargs="?", help="Optional target: claude, copilot, bash, zsh, pwsh")
     doctor_parser = sub.add_parser("doctor", help="Diagnose a nah target")
-    doctor_parser.add_argument("target", nargs="?", help="Target: claude, bash, zsh, pwsh")
+    doctor_parser.add_argument("target", nargs="?", help="Target: claude, copilot, bash, zsh, pwsh")
     run_parser = sub.add_parser("run", help="Launch an agent with nah active")
     run_sub = run_parser.add_subparsers(dest="run_agent")
     run_sub.add_parser("claude", help="Launch Claude Code with nah hooks active")
     run_sub.add_parser("codex", help="Launch Codex with nah hooks active")
+    run_sub.add_parser("copilot", help="Launch GitHub Copilot CLI with nah hooks active")
     codex_parser = sub.add_parser("codex", help="Set up or diagnose Codex integration")
     codex_sub = codex_parser.add_subparsers(dest="codex_command")
     codex_sub.add_parser("doctor", help="Show Codex preflight findings")
@@ -1970,6 +2174,10 @@ def main():
             from nah.codex_run import run_codex
 
             raise SystemExit(run_codex(sys.argv[3:]))
+        if sys.argv[2] == "copilot":
+            from nah.copilot_run import run_copilot
+
+            raise SystemExit(run_copilot(sys.argv[3:]))
 
     args = parser.parse_args()
 

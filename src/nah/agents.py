@@ -217,7 +217,7 @@ def copilot_settings_path() -> Path:
 
 
 # Agents whose config format we can auto-install into.
-INSTALLABLE_AGENTS = {CLAUDE}
+INSTALLABLE_AGENTS = {CLAUDE, COPILOT}
 
 AGENT_NAMES: dict[str, str] = {
     CLAUDE: "Claude Code",

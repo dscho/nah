@@ -1265,7 +1265,7 @@ class TestTargetLifecycleCli:
         assert f"usage: nah {command} <target>" in out
         # argparse line-wraps the help; normalize whitespace before matching.
         flat = " ".join(out.split())
-        assert "Required target: claude, bash, zsh, or pwsh" in flat
+        assert "Required target: claude, copilot, bash, zsh, or pwsh" in flat
         assert "Codex uses nah run codex" in flat
 
     def test_install_without_target_errors(self, capsys):
