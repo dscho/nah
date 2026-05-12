@@ -152,6 +152,7 @@ class _Stage:
     cmdlet: str            # canonicalized lowercase cmdlet name, or "" if unknown
     raw: str               # the original stage text (whitespace-trimmed)
     has_dynamic: bool      # variable expansion, subexpression, call op, etc.
+    has_redirect: bool = False  # output redirection (>, >>, 2>, *>, etc.)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +389,7 @@ def _parse_stage(stage_text: str) -> _Stage:
     """
     text = stage_text.strip()
     has_dynamic = False
+    has_redirect = False
     cmdlet = ""
 
     # Walk character-by-character outside of single/double-quoted runs.
@@ -413,6 +415,28 @@ def _parse_stage(stage_text: str) -> _Stage:
         if ch in ('"', "'"):
             in_str = ch
             i += 1
+            continue
+
+        # Output redirection. PowerShell uses `>`, `>>`, `2>`, `2>>`,
+        # `*>`, `*>>`, plus stream-merge `n>&m` to write a pipeline's
+        # output to a file or merge streams. Any of these in a stage
+        # is a disk write the static check cannot inspect, regardless
+        # of which cmdlet starts the stage.
+        if ch == ">":
+            has_redirect = True
+            i += 1
+            if i < n and text[i] == ">":
+                i += 1
+            continue
+        if (ch in "123456*") and i + 1 < n and text[i + 1] == ">":
+            has_redirect = True
+            i += 2
+            # Skip the optional second `>` (e.g., `2>>`) and
+            # stream-merge target like `&1` in `2>&1`.
+            if i < n and text[i] in (">", "&"):
+                i += 1
+                if i < n and text[i].isdigit():
+                    i += 1
             continue
 
         # Subexpression markers: $(...), @(...), ${...}.
@@ -479,16 +503,17 @@ def _parse_stage(stage_text: str) -> _Stage:
             continue
         i += 1
 
-    return _Stage(cmdlet=cmdlet, raw=text, has_dynamic=has_dynamic)
+    return _Stage(cmdlet=cmdlet, raw=text, has_dynamic=has_dynamic, has_redirect=has_redirect)
 
 
 def _classify_pipeline(stages: list[_Stage]) -> tuple[str, str]:
     """Reduce a pipeline to a single (decision, reason) pair.
 
     A pipeline is only ALLOW if every stage's cmdlet is in the
-    read-only safelist and no stage has dynamic content. Any deny stage
-    promotes the whole pipeline to BLOCK; any ask stage or unknown
-    stage demotes to ASK.
+    read-only safelist and no stage has dynamic content or output
+    redirection. Any deny stage promotes the whole pipeline to
+    BLOCK; any ask stage, unknown stage, or redirection demotes
+    to ASK.
     """
     worst = "allow"
     reasons: list[str] = []
@@ -504,6 +529,13 @@ def _classify_pipeline(stages: list[_Stage]) -> tuple[str, str]:
         )
 
     for s in stages:
+        if s.has_redirect:
+            worst = _stricter(worst, "ask")
+            reasons.append(
+                "PowerShell uses output redirection nah cannot inspect "
+                f"(stage: {_truncate(s.raw)})"
+            )
+            continue
         if s.has_dynamic:
             worst = _stricter(worst, "ask")
             reasons.append(
