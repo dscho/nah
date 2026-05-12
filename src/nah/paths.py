@@ -13,6 +13,24 @@ _HOOKS_DIR = os.path.realpath(os.path.join(_HOME, ".claude", "hooks"))
 _NAH_CONFIG_DIR = os.path.realpath(nah_config_dir())
 _WINDOWS_APPDATA_DIR = windows_appdata_dir()
 
+
+def _copilot_home() -> str:
+    """Return the active Copilot CLI home directory.
+
+    Honors COPILOT_HOME when set so $COPILOT_HOME/hooks/ and
+    $COPILOT_HOME/settings.json are also self-protected. Falls back to
+    ~/.copilot/ otherwise.
+    """
+    return os.environ.get("COPILOT_HOME") or os.path.join(_HOME, ".copilot")
+
+
+def _copilot_hooks_dir() -> str:
+    return os.path.realpath(os.path.join(_copilot_home(), "hooks"))
+
+
+def _copilot_settings_path() -> str:
+    return os.path.realpath(os.path.join(_copilot_home(), "settings.json"))
+
 # Sensitive paths: (resolved_dir, display_name, policy)
 # Hook path (~/.claude/hooks) and nah config (~/.config/nah) are NOT in this list —
 # checked separately via is_hook_path() / is_nah_config_path() so they survive profile: none.
@@ -109,6 +127,34 @@ def is_hook_path(resolved: str) -> bool:
     if not resolved:
         return False
     return resolved == _HOOKS_DIR or resolved.startswith(_HOOKS_DIR + os.sep)
+
+
+def is_copilot_hook_path(resolved: str) -> bool:
+    """Check if path targets the Copilot CLI hooks dir (self-protection).
+
+    Covers $COPILOT_HOME/hooks/ when set, otherwise ~/.copilot/hooks/.
+    """
+    if not resolved:
+        return False
+    hooks_dir = _copilot_hooks_dir()
+    return resolved == hooks_dir or resolved.startswith(hooks_dir + os.sep)
+
+
+def is_copilot_settings_path(resolved: str) -> bool:
+    """Check if path targets the Copilot CLI settings.json (self-protection).
+
+    A guarded session that writes ``disableAllHooks: true`` here, or
+    rewrites the inline ``hooks`` block, would silently bypass nah for
+    every subsequent tool call.
+    """
+    if not resolved:
+        return False
+    settings = _copilot_settings_path()
+    if resolved == settings:
+        return True
+    # Also catch settings.local.json in the same directory.
+    settings_local = settings[:-len("settings.json")] + "settings.local.json"
+    return resolved == settings_local
 
 
 def is_nah_config_path(resolved: str) -> bool:
@@ -349,6 +395,32 @@ def check_path(tool_name: str, raw_path: str) -> dict | None:
                 "reason": f"{tool_name} targets hook directory: ~/.claude/hooks/ (self-modification blocked)",
             }
         return None  # Read/Glob/Grep on hooks is fine
+
+    # Copilot CLI hook self-protection — same policy as Claude hooks.
+    # A guarded Copilot session must not be able to delete or rewrite the
+    # nah hook file under ~/.copilot/hooks/ (or $COPILOT_HOME/hooks/).
+    if is_copilot_hook_path(resolved):
+        if tool_name in hook_block_tools:
+            return {
+                "decision": taxonomy.BLOCK,
+                "reason": (
+                    f"{tool_name} targets Copilot CLI hook directory: "
+                    "~/.copilot/hooks/ (self-modification blocked)"
+                ),
+            }
+        return None  # Read/Glob/Grep on hooks is fine
+
+    # Copilot CLI settings self-protection — ASK on every tool.
+    # Users legitimately edit settings, but flipping disableAllHooks to
+    # true silently disables every nah hook from the next session on.
+    if is_copilot_settings_path(resolved):
+        return {
+            "decision": taxonomy.ASK,
+            "reason": (
+                f"{tool_name} targets Copilot CLI settings "
+                "(can disable nah via disableAllHooks)"
+            ),
+        }
 
     # Config self-protection — ASK for all tools (users legitimately edit config)
     if is_nah_config_path(resolved):
