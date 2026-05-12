@@ -363,6 +363,41 @@ _DYNAMIC_MARKERS = (
 )
 
 
+def _plain_assignment_eq(text: str, start: int, n: int) -> int | None:
+    """Return the index of `=` when ``text[start:]`` is a plain
+    `$name = ...` assignment, or None.
+
+    A "plain" assignment has the form ``$IDENT = ...`` where IDENT is
+    purely ``[A-Za-z_][A-Za-z0-9_]*``. Property access (``$x.Field``),
+    indexing (``$x[0]``), scoped names (``$env:Path``,
+    ``$global:foo``), and braced names (``${name}``) are NOT plain;
+    each of them encodes a mutation that must surface as ASK.
+
+    Compound assignment operators (``+=``, ``-=``, ``*=``, ``/=``,
+    ``%=``) also count as plain assignment of the right-hand side
+    since the RHS still drives the classifier.
+    """
+    if start >= n or text[start] != "$":
+        return None
+    i = start + 1
+    # Identifier must start with letter or underscore.
+    if i >= n or not (text[i].isalpha() or text[i] == "_"):
+        return None
+    while i < n and (text[i].isalnum() or text[i] == "_"):
+        i += 1
+    # Skip whitespace.
+    while i < n and text[i] in (" ", "\t"):
+        i += 1
+    if i >= n:
+        return None
+    # Plain `=` or compound `+=`, `-=`, `*=`, `/=`, `%=`.
+    if text[i] == "=":
+        return i
+    if text[i] in "+-*/%" and i + 1 < n and text[i + 1] == "=":
+        return i + 1
+    return None
+
+
 def _parse_stage(stage_text: str) -> _Stage:
     """Extract the cmdlet name and dynamic-content flag for one stage.
 
@@ -473,20 +508,38 @@ def _parse_stage(stage_text: str) -> _Stage:
         # (`$x = ...`). We capture it once.
         if not cmdlet_done and ch not in (" ", "\t", "\n"):
             if ch == "$":
-                # Plain local variable assignment of the form `$name = ...`
-                # is the only assignment pattern we treat as transparent;
-                # `$env:Path = ...`, `$global:foo = ...`, and provider-
-                # qualified variables are mutations that must be ASK-ed.
-                # The split between "plain" and "scoped" is handled in a
-                # separate commit.
-                eq = text.find("=", i)
-                if eq != -1 and eq < n - 1 and ":" not in text[i + 1: eq]:
+                # Plain local variable assignment of the form
+                # `$name = ...` is the only assignment pattern we
+                # treat as transparent. The right-hand side gets
+                # classified as if the assignment were not there.
+                #
+                # Anything else is a mutation in its own right and
+                # must surface as ASK:
+                #
+                # - `$env:Path = ...`, `$global:foo = ...`,
+                #   `$script:bar = ...`, `$using:baz = ...` mutate
+                #   environment or scoped state that survives the
+                #   command.
+                # - `$x.Property = ...` mutates a member of an
+                #   existing object.
+                # - `$x[0] = ...` mutates an indexable container.
+                # - `${weird:name} = ...` is a scoped name in
+                #   braces.
+                #
+                # All four can mutate state attackers care about
+                # (PATH, module table, object internals) while the
+                # right-hand side is something innocuous like
+                # `Get-Date`, so the cmdlet-first check would have
+                # classified them ALLOW.
+                eq = _plain_assignment_eq(text, i, n)
+                if eq is not None:
                     i = eq + 1
                     while i < n and text[i] in (" ", "\t"):
                         i += 1
                     continue
                 # Any non-assignment use of a variable as the first
-                # token is dynamic — we cannot know what it expands to.
+                # token is dynamic — we cannot know what it expands
+                # to.
                 has_dynamic = True
                 cmdlet_done = True
                 i += 1
