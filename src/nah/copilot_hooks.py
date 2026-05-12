@@ -327,23 +327,22 @@ def _classify(canonical: str, tool_input: dict, raw_tool_name: str) -> dict:
             "reason": "ask_user is a user prompt, not a tool",
         }]}}
 
-    # task: subagent spawn. Until subagent tool calls are empirically
-    # confirmed to re-enter preToolUse, treat as ASK so the user has a
-    # chance to inspect the subagent prompt. See plan.md task-bypass.
+    # task: subagent spawn. Empirical inspection of the Copilot CLI
+    # source (PreToolUseHooksProcessor in app.js, used by every Session
+    # including those built by createSubagentSession with the parent's
+    # hooks inherited) confirms that every tool call made by a
+    # subagent re-enters preToolUse. Passing the task tool through is
+    # therefore safe: each inner tool call gets classified by nah on
+    # arrival, so the subagent prompt itself is not an exfiltration
+    # surface that bypasses the guard. The user still sees an explicit
+    # stage record so logs are self-explanatory.
     if raw_tool_name == "task":
-        return {
-            "decision": taxonomy.ASK,
-            "reason": (
-                "Copilot task: spawning a subagent — verify the prompt "
-                "before allowing"
-            ),
-            "_meta": {"stages": [{
-                "action_type": taxonomy.UNKNOWN,
-                "decision": taxonomy.ASK,
-                "policy": taxonomy.ASK,
-                "reason": "subagent preToolUse re-entry unverified",
-            }]},
-        }
+        return {"decision": taxonomy.ALLOW, "_meta": {"stages": [{
+            "action_type": taxonomy.UNKNOWN,
+            "decision": taxonomy.ALLOW,
+            "policy": taxonomy.ALLOW,
+            "reason": "task subagent — inner tool calls re-enter preToolUse",
+        }]}}
 
     # Bash, web_fetch (via synthetic curl).
     if canonical == "Bash":
