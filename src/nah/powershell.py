@@ -571,13 +571,20 @@ def _classify_pipeline(stages: list[_Stage]) -> tuple[str, str]:
     worst = "allow"
     reasons: list[str] = []
 
-    # Special-case pipelines that end in iex or Invoke-Expression: that
-    # always means "the previous stage's output gets evaluated", which
-    # is a textbook curl-pipe-bash / iwr-pipe-iex pattern. Treat as
-    # BLOCK even when the source is iwr (which is otherwise ASK).
+    # Special-case pipelines that end in iex or Invoke-Expression.
+    # The same cmdlet is also in the deny list, so any iex stage at
+    # any position blocks. The early-return here exists only to give
+    # the user a more informative reason — "pipes output into iex"
+    # for the curl-pipe-bash-equivalent pattern, "evaluates a string
+    # directly" for the single-stage direct call.
     if stages and stages[-1].cmdlet in {"iex", "invoke-expression"}:
+        if len(stages) > 1:
+            return "block", (
+                "PowerShell pipes output into Invoke-Expression "
+                "(remote code execution pattern)"
+            )
         return "block", (
-            "PowerShell pipes output into Invoke-Expression "
+            "PowerShell Invoke-Expression evaluates a string as code "
             "(remote code execution pattern)"
         )
 
