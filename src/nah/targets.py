@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 CLAUDE = "claude"
 CODEX = "codex"
+COPILOT = "copilot"
 BASH = "bash"
 ZSH = "zsh"
 PWSH = "pwsh"
@@ -31,6 +32,12 @@ TARGETS: dict[str, Target] = {
         label="Claude Code",
         description="protect Claude Code with direct hooks",
     ),
+    COPILOT: Target(
+        key=COPILOT,
+        kind=AGENT,
+        label="GitHub Copilot CLI",
+        description="protect GitHub Copilot CLI with a preToolUse hook",
+    ),
     BASH: Target(
         key=BASH,
         kind=SHELL,
@@ -52,7 +59,7 @@ TARGETS: dict[str, Target] = {
 }
 
 SHELL_TARGETS = {BASH, ZSH, PWSH}
-AGENT_TARGETS = {CLAUDE}
+AGENT_TARGETS = {CLAUDE, COPILOT}
 
 
 def get_target(key: str | None) -> Target | None:
@@ -108,7 +115,7 @@ def format_target_help(command: str) -> str:
     """Return the guided target list for lifecycle commands."""
     action = f"what to {command}" if command in ("install", "uninstall", "update") else "a target"
     lines = [f"nah {command}: choose {action}", ""]
-    for key in (CLAUDE, BASH, ZSH, PWSH):
+    for key in (CLAUDE, COPILOT, BASH, ZSH, PWSH):
         target = TARGETS[key]
         if command == "update" and not target.can_update:
             continue
