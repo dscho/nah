@@ -169,6 +169,31 @@ def classify_powershell(command: str) -> dict:
     is populated directly so the brand-message resolver in
     ``messages.enrich_decision`` does not rewrite the PowerShell-specific
     explanation into a generic one.
+
+    When the optional ``[powershell]`` extra is installed (which pulls
+    in ``tree-sitter`` and ``tree-sitter-powershell``), classification
+    is delegated to the tree-sitter-backed engine for a structural
+    parse. Otherwise, the hand-rolled scanner below runs as the
+    floor — it covers the common cases and conservatively ASKs on
+    anything unrecognized.
+    """
+    try:
+        from nah._powershell_treesitter import classify_treesitter
+    except ImportError:
+        # The user did not install the [powershell] extra. Fall
+        # through to the hand-rolled scanner — its conservative ASK
+        # floor still guards a guarded Copilot session, just at lower
+        # fidelity than the tree-sitter engine.
+        return _classify_handwritten(command)
+    return classify_treesitter(command)
+
+
+def _classify_handwritten(command: str) -> dict:
+    """Classify a PowerShell command without tree-sitter.
+
+    Same contract as ``classify_powershell`` but always uses the
+    stdlib-only state machine. Exposed for tests that need to
+    exercise the fallback path without uninstalling the extra.
     """
     text = command.strip()
     if not text:
