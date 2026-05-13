@@ -426,10 +426,9 @@ def _plain_assignment_eq(text: str, start: int, n: int) -> int | None:
 def _parse_stage(stage_text: str) -> _Stage:
     """Extract the cmdlet name and dynamic-content flag for one stage.
 
-    A stage is "dynamic" if anything inside it (outside quoted strings)
-    could execute arbitrary code that the static check cannot inspect.
-    The classifier conservatively marks the stage dynamic when it
-    encounters:
+    A stage is "dynamic" if anything inside it could execute arbitrary
+    code that the static check cannot inspect. The classifier
+    conservatively marks the stage dynamic when it encounters:
 
     - script blocks ``{ ... }`` — the body is opaque code that
       Where-Object, ForEach-Object, Start-Job, calculated properties,
@@ -439,7 +438,11 @@ def _parse_stage(stage_text: str) -> _Stage:
     - the call operator ``& $var`` or ``& 'cmd'`` that runs a value
       as a command,
     - subexpressions ``$(...)``, array subexpressions ``@(...)``, and
-      braced variable names ``${...}``.
+      braced variable names ``${...}``, including when those appear
+      inside a *double-quoted* string. PowerShell expandable strings
+      interpolate subexpressions at runtime, so
+      ``echo "$(rm -rf /)"`` is real code execution; only
+      ``'$(rm -rf /)'`` (single quotes, verbatim strings) is inert.
 
     These are deliberately coarse: parens around a value
     (`-Path (Get-Location)`) are flagged the same as parens wrapping a
@@ -452,9 +455,11 @@ def _parse_stage(stage_text: str) -> _Stage:
     has_redirect = False
     cmdlet = ""
 
-    # Walk character-by-character outside of single/double-quoted runs.
-    # Inside a quoted string the same characters are literal and must
-    # not trigger the dynamic markers.
+    # Walk character-by-character. Outside of any quoted run the full
+    # dynamic-marker set fires. Inside a *single-quoted* run nothing
+    # interpolates so all of these markers are inert. Inside a
+    # *double-quoted* run, PowerShell expands ``$var``, ``$(...)``,
+    # ``@(...)``, and ``${...}`` — so the same markers fire there too.
     in_str = ""  # '"' or "'" or ""
     i = 0
     n = len(text)
@@ -466,6 +471,18 @@ def _parse_stage(stage_text: str) -> _Stage:
         if in_str:
             # Backtick escape inside double-quoted strings only.
             if ch == "`" and in_str == '"' and i + 1 < n:
+                i += 2
+                continue
+            # Subexpression interpolation inside expandable strings.
+            # Per MS PowerShell about_Quoting_Rules, only ``$var`` and
+            # ``$(...)`` are evaluated inside ``"..."`` strings;
+            # ``@(...)`` and ``${name}`` are NOT subexpression
+            # operators in this context (``${name}`` is variable
+            # interpolation, ``@(...)`` is literal text). Verbatim
+            # strings (single quotes) keep ``$(...)`` inert too,
+            # hence the in_str == '"' guard.
+            if in_str == '"' and ch == "$" and i + 1 < n and text[i + 1] == "(":
+                has_dynamic = True
                 i += 2
                 continue
             if ch == in_str:
