@@ -118,6 +118,11 @@ def _classify_statement(node, source: bytes) -> tuple[str, str, dict | None]:
     # but defensively handle the bare assignment shape just in case.
     if node.type == "assignment_expression":
         return _classify_assignment(node, source)
+    # ``empty_statement`` is the AST node produced for a bare statement
+    # separator such as the ``;`` in ``Get-Date; Get-Location``. It does
+    # nothing, so it does nothing to the decision either.
+    if node.type == "empty_statement":
+        return ("allow", "", None)
     # Any other top-level statement (function defs, if blocks, loops,
     # etc.) — we cannot statically reason about whether their body is
     # safe, so route to ASK with a structural reason.
