@@ -108,11 +108,7 @@ def format_target_help(command: str) -> str:
     """Return the guided target list for lifecycle commands."""
     action = f"what to {command}" if command in ("install", "uninstall", "update") else "a target"
     lines = [f"nah {command}: choose {action}", ""]
-<<<<<<< HEAD
-    for key in (CLAUDE, BASH, ZSH):
-=======
-    for key in (CLAUDE, COPILOT, BASH, ZSH, PWSH):
->>>>>>> ce4444e (Register `pwsh` as a shell target with PowerShell profile paths)
+    for key in (CLAUDE, BASH, ZSH, PWSH):
         target = TARGETS[key]
         if command == "update" and not target.can_update:
             continue

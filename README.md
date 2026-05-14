@@ -96,7 +96,7 @@ secret storage. Then connect the runtime you want to protect:
 | --- | --- |
 | Claude Code | `nah run claude` |
 | Codex | `nah codex setup`, then `nah run codex` |
-| Your shell | `nah install bash` or `nah install zsh` |
+| Your shell | `nah install bash`, `nah install zsh`, or `nah install pwsh` |
 
 For Codex, run setup before the first protected session. Then open `/hooks` on
 first launch after install or upgrade and review the nah hooks so `PreToolUse`,
@@ -277,6 +277,7 @@ nah run codex --confirm-edits           # also confirm safe project edits
 nah install claude                     # protect normal Claude Code sessions
 nah install bash                       # guard commands you type in bash
 nah install zsh                        # guard commands you type in zsh
+nah install pwsh                       # guard commands you type in PowerShell (pwsh)
 
 nah allow filesystem_delete            # tune policies
 nah deny network_outbound

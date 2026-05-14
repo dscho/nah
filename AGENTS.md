@@ -61,6 +61,7 @@ nah run claude           # launch claude with nah active (this session only)
 nah run codex            # launch codex with nah active (this session only)
 nah install claude       # install direct Claude Code hooks (permanent)
 nah install bash         # install interactive bash guard
+nah install pwsh         # install interactive PowerShell (pwsh) guard via PSReadLine
 nah uninstall claude     # clean direct Claude Code removal
 nah update claude        # update hook after pip upgrade
 
