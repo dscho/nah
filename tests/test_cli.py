@@ -1263,8 +1263,10 @@ class TestTargetLifecycleCli:
         assert exc.value.code == 0
         out = capsys.readouterr().out
         assert f"usage: nah {command} <target>" in out
-        assert "Required target: claude, bash, or zsh" in out
-        assert "Codex uses nah run codex" in out
+        # argparse line-wraps the help; normalize whitespace before matching.
+        flat = " ".join(out.split())
+        assert "Required target: claude, bash, zsh, or pwsh" in flat
+        assert "Codex uses nah run codex" in flat
 
     def test_install_without_target_errors(self, capsys):
         import nah.cli as cli_mod

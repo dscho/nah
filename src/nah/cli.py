@@ -1838,7 +1838,7 @@ def main():
         "target",
         nargs="?",
         metavar="target",
-        help="Required target: claude, bash, or zsh. Codex uses nah run codex",
+        help="Required target: claude, bash, zsh, or pwsh. Codex uses nah run codex",
     )
     install_parser.add_argument(
         "--force",
@@ -1854,7 +1854,7 @@ def main():
         "target",
         nargs="?",
         metavar="target",
-        help="Required target: claude, bash, or zsh. Codex uses nah run codex",
+        help="Required target: claude, bash, zsh, or pwsh. Codex uses nah run codex",
     )
     uninstall_parser = sub.add_parser(
         "uninstall",
@@ -1865,7 +1865,7 @@ def main():
         "target",
         nargs="?",
         metavar="target",
-        help="Required target: claude, bash, or zsh. Codex uses nah run codex",
+        help="Required target: claude, bash, zsh, or pwsh. Codex uses nah run codex",
     )
     test_parser = sub.add_parser("test", help="Dry-run classification for a command")
     test_parser.add_argument("--target", default=None, help="Target policy to simulate")
@@ -1929,9 +1929,9 @@ def main():
     untrust_project_parser = sub.add_parser("untrust-project", help="Remove project config trust")
     untrust_project_parser.add_argument("path", nargs="?", help="Project directory to untrust (default: active project or cwd)")
     status_parser = sub.add_parser("status", help="Show custom rules or target status")
-    status_parser.add_argument("target", nargs="?", help="Optional target: claude, bash, zsh")
+    status_parser.add_argument("target", nargs="?", help="Optional target: claude, bash, zsh, pwsh")
     doctor_parser = sub.add_parser("doctor", help="Diagnose a nah target")
-    doctor_parser.add_argument("target", nargs="?", help="Target: claude, bash, zsh")
+    doctor_parser.add_argument("target", nargs="?", help="Target: claude, bash, zsh, pwsh")
     run_parser = sub.add_parser("run", help="Launch an agent with nah active")
     run_sub = run_parser.add_subparsers(dest="run_agent")
     run_sub.add_parser("claude", help="Launch Claude Code with nah hooks active")
