@@ -251,7 +251,11 @@ def decide_terminal_command(
     cfg = get_config()
     bypass_env = str(cfg.terminal.get("bypass_env", "NAH_TERMINAL_BYPASS"))
     bypass = _is_bypass_enabled(bypass_env, command)
-    unsupported = _unsupported_line_reason(command)
+    # The unsupported-line check is bash heredoc syntax; PowerShell uses
+    # @'...'@ / @"..."@ here-strings instead, so the regex never matches
+    # legitimate PowerShell. Skip it for pwsh to avoid any false-positive
+    # surface from line text that happens to contain `<<`.
+    unsupported = _unsupported_line_reason(command) if target != PWSH else ""
 
     if bypass:
         result = TerminalDecision(
@@ -283,10 +287,13 @@ def decide_terminal_command(
             _log_terminal_decision(result, cfg.log)
         return result
 
-    classified = classify_command(command)
-    decision = classified.final_decision
-    reason = classified.reason
-    meta = _classify_meta(classified)
+    # The Bash classifier handles bash/zsh; the PowerShell classifier
+    # handles pwsh. The shapes of their results differ — bash returns
+    # a ClassifyResult dataclass, PowerShell a dict — so the dispatch
+    # is hidden in a helper that produces a uniform (decision, reason,
+    # meta, tool_label) tuple. The tool_label feeds human_reason so
+    # the user-facing messages name the right runtime.
+    decision, reason, meta, tool_label = _classify_for_target(command, target)
 
     if decision == taxonomy.ALLOW:
         result = TerminalDecision(
@@ -828,6 +835,52 @@ def _unsupported_line_reason(command: str) -> str:
     except ValueError as exc:
         return f"terminal guard cannot safely run incomplete shell input: {exc}"
     return ""
+
+
+def _classify_for_target(
+    command: str, target: str,
+) -> tuple[str, str, dict, str]:
+    """Dispatch classification by shell target.
+
+    Bash and zsh share the Bash classifier in nah.bash. Pwsh routes
+    through nah.powershell.classify_powershell instead, which knows
+    about cmdlets, the call operator, Invoke-Expression, and the rest
+    of the surface the Bash tokenizer does not.
+
+    Returns ``(decision, reason, meta, tool_label)``. ``tool_label`` is
+    the human-readable shell name fed to ``human_reason`` so the
+    branded prompts and log entries name the right runtime.
+    """
+    if target == PWSH:
+        from nah.powershell import classify_powershell
+
+        ps_result = classify_powershell(command)
+        decision = ps_result.get("decision", taxonomy.ALLOW)
+        reason = ps_result.get("reason", "")
+        # Translate the PowerShell decision shape into the terminal
+        # meta shape (stages list + source label). Tokens are synthesized
+        # from the raw command because the PowerShell engines do not
+        # expose a token list — the per-stage record is enough for the
+        # log viewer and for action_type extraction.
+        ps_meta = ps_result.get("_meta", {})
+        stages = []
+        for stage in ps_meta.get("stages", []):
+            stages.append({
+                "tokens": [command],
+                "action_type": stage.get("action_type", ""),
+                "policy": stage.get("policy", ""),
+                "decision": stage.get("decision", ""),
+                "reason": stage.get("reason", ""),
+            })
+        meta = {"stages": stages, "source": "terminal", "shell": PWSH}
+        return decision, reason, meta, "PowerShell"
+
+    # Bash and zsh share the Bash classifier.
+    classified = classify_command(command)
+    decision = classified.final_decision
+    reason = classified.reason
+    meta = _classify_meta(classified)
+    return decision, reason, meta, "Bash"
 
 
 def _classify_meta(result) -> dict:
