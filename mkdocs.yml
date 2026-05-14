@@ -51,6 +51,7 @@ nav:
   - Runtimes:
     - Claude Code: runtimes/claude-code.md
     - Codex: runtimes/codex.md
+    - GitHub Copilot CLI: runtimes/copilot-cli.md
     - Terminal Guard: runtimes/terminal-guard.md
   - How it works: how-it-works.md
   - Threat model: threat-model.md
