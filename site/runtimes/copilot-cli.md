@@ -160,3 +160,34 @@ the cloned repository's `.github/hooks/*.json` rather than the
 user-level installation. A guarded local Copilot CLI session that
 delegates work to the cloud agent therefore runs outside nah's reach
 once the delegation crosses the network boundary.
+
+## Limitation: late `modifiedArgs` rewrites
+
+Copilot CLI runs `preToolUse` hooks in a fixed order — settings
+inline hooks, then user-level hook files, then repository
+`.github/hooks/*.json` files, then plugin hooks — and concatenates
+the entries from each source into a single array. The executor
+loops over that array; once any hook returns
+`permissionDecision: "deny"`, every later hook is skipped for that
+tool call. nah's deny is therefore a hard stop.
+
+What is *not* a hard stop is nah's allow. After nah returns
+`allow`, the executor continues calling subsequent hooks. A later
+hook that returns `modifiedArgs` mutates the tool-call arguments
+in place, and the actual tool execution uses the modified args.
+nah does not re-inspect after the rewrite.
+
+In practice this means a repository hook (from `.github/hooks/`)
+or a Copilot plugin hook can take a command that nah allowed and
+rewrite it before execution. The threat surface is narrow because
+all three sources require explicit user action: cloning a repo,
+installing a plugin, or editing settings.json. None of these
+happen silently. But the user should be aware that nah's
+permission decision applies to the args nah saw, not necessarily
+to the args the tool runs against, if other hooks are configured.
+
+Mitigation: avoid installing Copilot plugins or running inside
+repositories whose `.github/hooks/` you have not reviewed. If you
+need stronger guarantees, audit `~/.copilot/hooks/`, your repo's
+`.github/hooks/`, and `~/.copilot/settings.json` for non-nah
+`preToolUse` entries before each session.
