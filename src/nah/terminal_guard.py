@@ -311,7 +311,7 @@ def decide_terminal_command(
 
     if decision == taxonomy.BLOCK:
         action_type = _first_action_type(meta)
-        human = human_reason(reason, decision=taxonomy.BLOCK, action_type=action_type, tool="Bash", meta=meta)
+        human = human_reason(reason, decision=taxonomy.BLOCK, action_type=action_type, tool=tool_label, meta=meta)
         result = TerminalDecision(
             decision=taxonomy.BLOCK,
             reason=reason,
@@ -348,7 +348,7 @@ def decide_terminal_command(
 
     if assume_confirmed:
         action_type = _first_action_type(meta)
-        human = human_reason(reason, decision=taxonomy.ASK, action_type=action_type, tool="Bash", meta=meta)
+        human = human_reason(reason, decision=taxonomy.ASK, action_type=action_type, tool=tool_label, meta=meta)
         result = TerminalDecision(
             decision=taxonomy.ASK,
             reason=reason,
@@ -366,7 +366,7 @@ def decide_terminal_command(
 
     if confirm and _stdin_is_tty(stdin):
         action_type = _first_action_type(meta)
-        human = human_reason(reason, decision=taxonomy.ASK, action_type=action_type, tool="Bash", meta=meta)
+        human = human_reason(reason, decision=taxonomy.ASK, action_type=action_type, tool=tool_label, meta=meta)
         prompt_result = TerminalDecision(
             decision=taxonomy.ASK,
             reason=reason,
@@ -397,7 +397,7 @@ def decide_terminal_command(
             return result
 
     action_type = _first_action_type(meta)
-    human = human_reason(reason, decision=taxonomy.ASK, action_type=action_type, tool="Bash", meta=meta)
+    human = human_reason(reason, decision=taxonomy.ASK, action_type=action_type, tool=tool_label, meta=meta)
     result = TerminalDecision(
         decision=taxonomy.ASK,
         reason=reason,

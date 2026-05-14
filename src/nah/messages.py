@@ -34,6 +34,20 @@ _COMPOSITION_MESSAGES = {
     "read | exec": "this runs code read from a local file or command output",
 }
 
+
+def _shell_localize(message: str, tool: str) -> str:
+    """Adapt a composition message to the active shell.
+
+    The "network | exec" message hardcodes "bash" because that is the
+    canonical curl-pipe-bash phrasing. For PowerShell payloads the
+    equivalent pattern is iwr-pipe-iex, and surfacing "bash" in the
+    user message would be misleading. Substitute the shell name when
+    the tool argument identifies it.
+    """
+    if tool == "PowerShell" and "in bash" in message:
+        return message.replace("in bash", "in PowerShell")
+    return message
+
 _ACTION_MESSAGES = {
     taxonomy.FILESYSTEM_READ: "this reads files",
     taxonomy.FILESYSTEM_WRITE: "this writes files",
@@ -109,9 +123,9 @@ def human_reason(
     clean_reason = _strip_wrappers(reason, tool)
     composition = _composition_from(meta, clean_reason)
     if composition in _COMPOSITION_MESSAGES:
-        return _finalize(_COMPOSITION_MESSAGES[composition])
+        return _finalize(_shell_localize(_COMPOSITION_MESSAGES[composition], tool))
     if "remote code execution" in clean_reason.lower():
-        return _finalize(_COMPOSITION_MESSAGES["network | exec"])
+        return _finalize(_shell_localize(_COMPOSITION_MESSAGES["network | exec"], tool))
     if "data exfiltration" in clean_reason.lower():
         return _finalize(_COMPOSITION_MESSAGES["sensitive_read | network"])
     if "obfuscated execution" in clean_reason.lower():

@@ -1780,7 +1780,7 @@ def cmd_terminal_decision(args: argparse.Namespace) -> None:
 def _run_hidden_terminal_decision(argv: list[str]) -> None:
     """Parse and run the hidden terminal decision helper."""
     parser = argparse.ArgumentParser(prog="nah _terminal-decision", add_help=False)
-    parser.add_argument("--target", required=True, choices=("bash", "zsh"))
+    parser.add_argument("--target", required=True, choices=("bash", "zsh", "pwsh"))
     parser.add_argument("--confirm", action="store_true")
     parser.add_argument("--assume-confirmed", action="store_true")
     parser.add_argument("--skip-llm", action="store_true")
