@@ -428,6 +428,19 @@ def _print_shell_reload_hint(shell: str) -> None:
         "NAH_TERMINAL_BYPASS NAH_TERMINAL_GUARD_ACTIVE "
         "NAH_TERMINAL_GUARD NAH_TERMINAL_SHELL"
     )
+    if shell == "pwsh":
+        # PowerShell does not have an `env -u`-style helper. The
+        # equivalent is to clear the marker variables in the current
+        # process before exec'ing pwsh -NoExit, but exec replacement
+        # also does not exist in PowerShell. The simplest correct
+        # advice is to start a fresh pwsh and (if a stale guard
+        # marker is in the env) clear NAH_TERMINAL_GUARD_ACTIVE
+        # first. The snippet's own guard against double-install
+        # uses that env var, so clearing it is what matters most.
+        print(f"Restart {shell}, or run:")
+        print("  $env:NAH_TERMINAL_GUARD_ACTIVE = $null; pwsh -NoExit")
+        print("After reload, use `nah-bypass <command>` for one-shot bypasses.")
+        return
     if shell == "bash":
         reload_cmd = (
             f"NAH_TERMINAL_BYPASS=1 exec env "

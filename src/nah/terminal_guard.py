@@ -632,17 +632,159 @@ fi
 """
 
 
+def render_pwsh_snippet() -> str:
+    """Return the managed PowerShell snippet.
+
+    Installs a PSReadLine Enter-key handler that runs every typed
+    command through ``nah _terminal-decision --target pwsh`` before
+    PowerShell accepts the line. The handler:
+
+    - Lets PSReadLine continue accumulating multi-line input by
+      calling ``InsertLineAbove`` (the same method the default
+      Enter binding uses) when the buffer parses as incomplete
+      PowerShell, so braces, here-strings, and pipeline
+      continuations work normally.
+    - Recognizes a ``nah-bypass`` prefix and strips it before
+      execution, mirroring the bash/zsh behavior.
+    - Maps nah's exit codes onto PSReadLine actions: 0 →
+      ``AcceptLine``, 10 (ASK) → invoke ``--confirm`` and accept
+      or revert based on the user's answer, 20 (BLOCK) and other
+      errors → re-run nah verbosely so the user sees the brand
+      message, then ``RevertLine`` to clear the buffer.
+
+    When PSReadLine is not installed the snippet exits without
+    binding anything. The PowerShell session then runs unguarded
+    rather than crashing, which matches how the bash snippet
+    behaves when readline bindings cannot be installed.
+    """
+    return r"""# nah terminal guard for interactive PowerShell
+if ($Host.Name -eq 'ConsoleHost' -and $env:NAH_TERMINAL_GUARD_ACTIVE -ne '1') {
+    $__nahHasPSReadLine = $null -ne (Get-Module -ListAvailable -Name PSReadLine | Select-Object -First 1)
+    if ($__nahHasPSReadLine) {
+        Import-Module PSReadLine -ErrorAction SilentlyContinue
+        $env:NAH_TERMINAL_GUARD = '1'
+        $env:NAH_TERMINAL_SHELL = 'pwsh'
+        $env:NAH_TERMINAL_GUARD_ACTIVE = '1'
+
+        Set-PSReadLineKeyHandler -Chord Enter -BriefDescription 'NahValidate' `
+            -Description 'Validate typed command via nah before accepting' `
+            -ScriptBlock {
+                param($key, $arg)
+
+                $line = $null
+                $cursor = $null
+                [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState(
+                    [ref]$line, [ref]$cursor)
+
+                if ([string]::IsNullOrWhiteSpace($line)) {
+                    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+                    return
+                }
+
+                # Let PSReadLine keep accumulating multi-line input
+                # (open braces, here-strings, pipeline continuations).
+                $tokens = $null
+                $parseErrors = $null
+                $null = [System.Management.Automation.Language.Parser]::ParseInput(
+                    $line, [ref]$tokens, [ref]$parseErrors)
+                foreach ($e in $parseErrors) {
+                    if ($e.IncompleteInput) {
+                        [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
+                        return
+                    }
+                }
+
+                $bypass = $false
+                $runLine = $line
+                $trimmed = $line.TrimStart()
+                if ($trimmed -eq 'nah-bypass' -or $trimmed -like 'nah-bypass *' -or $trimmed -like "nah-bypass`t*") {
+                    $bypass = $true
+                    $runLine = $trimmed.Substring('nah-bypass'.Length).TrimStart()
+                    if ([string]::IsNullOrWhiteSpace($runLine)) {
+                        [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+                        return
+                    }
+                }
+
+                if ($bypass) {
+                    $env:NAH_TERMINAL_BYPASS = '1'
+                    & nah _terminal-decision --target pwsh -- $runLine
+                    $nahStatus = $LASTEXITCODE
+                    Remove-Item Env:NAH_TERMINAL_BYPASS -ErrorAction SilentlyContinue
+                } else {
+                    & nah _terminal-decision --target pwsh --no-log --skip-llm -- $line *> $null
+                    $nahStatus = $LASTEXITCODE
+                }
+
+                if ($nahStatus -eq 0) {
+                    if ($bypass) {
+                        [Microsoft.PowerShell.PSConsoleReadLine]::Replace(
+                            0, $line.Length, $runLine)
+                    }
+                    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+                    return
+                }
+
+                if ($nahStatus -eq 10) {
+                    # ASK: re-run with --confirm so the user sees the
+                    # branded prompt and answers y/N. The confirm path
+                    # talks to the user's stdin/stderr directly.
+                    & nah _terminal-decision --target pwsh --confirm -- $line
+                    if ($LASTEXITCODE -eq 0) {
+                        if ($bypass) {
+                            [Microsoft.PowerShell.PSConsoleReadLine]::Replace(
+                                0, $line.Length, $runLine)
+                        }
+                        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+                        return
+                    }
+                    [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+                    return
+                }
+
+                # BLOCK (20) or unexpected error. Re-run verbosely so
+                # the user sees the reason, then clear the buffer.
+                & nah _terminal-decision --target pwsh -- $line | Out-Null
+                [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+            }
+    }
+}
+"""
+
+
 def _require_shell(shell: str) -> None:
     if shell not in SHELLS:
         raise ValueError(f"unsupported shell target: {shell}")
 
 
 def _write_snippet(paths: ShellPaths) -> None:
-    content = render_bash_snippet() if paths.shell == BASH else render_zsh_snippet()
+    if paths.shell == BASH:
+        content = render_bash_snippet()
+    elif paths.shell == ZSH:
+        content = render_zsh_snippet()
+    else:
+        content = render_pwsh_snippet()
     _write_text(paths.snippet, content)
 
 
 def _managed_block(paths: ShellPaths) -> str:
+    """Return the rc-file block that sources nah's snippet.
+
+    Bash and zsh use the POSIX-shell ``[ -r path ] && . path`` form.
+    PowerShell uses ``if (Test-Path $path) { . $path }``, which is
+    valid in both pwsh 7+ and the legacy Windows PowerShell 5.x. The
+    marker comments work in either family because ``#`` introduces a
+    line comment in all of them.
+    """
+    if paths.shell == PWSH:
+        snippet_str = str(paths.snippet).replace("'", "''")
+        return "\n".join([
+            MARKER_START,
+            f"# Managed by nah. Remove with: nah uninstall {paths.shell}",
+            f"if (Test-Path '{snippet_str}') {{ . '{snippet_str}' }}",
+            MARKER_END,
+            "",
+        ])
     return "\n".join([
         MARKER_START,
         f"# Managed by nah. Remove with: nah uninstall {paths.shell}",
