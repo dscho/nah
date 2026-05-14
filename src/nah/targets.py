@@ -7,6 +7,7 @@ CLAUDE = "claude"
 CODEX = "codex"
 BASH = "bash"
 ZSH = "zsh"
+PWSH = "pwsh"
 
 AGENT = "agent"
 SHELL = "shell"
@@ -42,9 +43,15 @@ TARGETS: dict[str, Target] = {
         label="zsh",
         description="protect interactive zsh",
     ),
+    PWSH: Target(
+        key=PWSH,
+        kind=SHELL,
+        label="pwsh",
+        description="protect interactive PowerShell (pwsh)",
+    ),
 }
 
-SHELL_TARGETS = {BASH, ZSH}
+SHELL_TARGETS = {BASH, ZSH, PWSH}
 AGENT_TARGETS = {CLAUDE}
 
 
@@ -101,7 +108,11 @@ def format_target_help(command: str) -> str:
     """Return the guided target list for lifecycle commands."""
     action = f"what to {command}" if command in ("install", "uninstall", "update") else "a target"
     lines = [f"nah {command}: choose {action}", ""]
+<<<<<<< HEAD
     for key in (CLAUDE, BASH, ZSH):
+=======
+    for key in (CLAUDE, COPILOT, BASH, ZSH, PWSH):
+>>>>>>> ce4444e (Register `pwsh` as a shell target with PowerShell profile paths)
         target = TARGETS[key]
         if command == "update" and not target.can_update:
             continue

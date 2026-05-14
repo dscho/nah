@@ -21,7 +21,8 @@ from nah.platform_paths import nah_config_dir
 
 BASH = "bash"
 ZSH = "zsh"
-SHELLS = {BASH, ZSH}
+PWSH = "pwsh"
+SHELLS = {BASH, ZSH, PWSH}
 
 EXIT_ALLOW = 0
 EXIT_ASK_DECLINED = 10
@@ -64,14 +65,63 @@ def shell_paths(shell: str) -> ShellPaths:
     """Return rc/snippet paths for a supported shell."""
     _require_shell(shell)
     home = Path.home()
-    rc_name = ".bashrc" if shell == BASH else ".zshrc"
-    snippet_name = "bash.sh" if shell == BASH else "zsh.zsh"
+    if shell == BASH:
+        return ShellPaths(
+            shell=shell,
+            rc_file=home / ".bashrc",
+            snippet=Path(nah_config_dir()) / "terminal" / "bash.sh",
+            login_rc_file=home / ".bash_profile",
+        )
+    if shell == ZSH:
+        return ShellPaths(
+            shell=shell,
+            rc_file=home / ".zshrc",
+            snippet=Path(nah_config_dir()) / "terminal" / "zsh.zsh",
+            login_rc_file=None,
+        )
+    # PowerShell. The profile path varies by edition and OS:
+    # - Modern pwsh 7+ (cross-platform):
+    #     POSIX:    ~/.config/powershell/Microsoft.PowerShell_profile.ps1
+    #     Windows:  ~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1
+    # - Legacy Windows PowerShell 5.x (Windows-only, still ships with
+    #   Windows and used by tooling like the GitHub Copilot CLI's
+    #   powershell tool when pwsh is unavailable):
+    #     Windows:  ~/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1
+    # The snippet is parked under nah_config_dir/terminal/ next to the
+    # bash and zsh snippets so update/uninstall work uniformly. The
+    # legacy profile is treated like bash's .bash_profile — only
+    # installed into when it already exists (we do not create a
+    # PowerShell 5.x profile on a user's behalf).
     return ShellPaths(
         shell=shell,
-        rc_file=home / rc_name,
-        snippet=Path(nah_config_dir()) / "terminal" / snippet_name,
-        login_rc_file=home / ".bash_profile" if shell == BASH else None,
+        rc_file=_pwsh_profile_path(),
+        snippet=Path(nah_config_dir()) / "terminal" / "pwsh.ps1",
+        login_rc_file=_legacy_powershell_profile_path(),
     )
+
+
+def _pwsh_profile_path() -> Path:
+    """Return the canonical pwsh 7+ profile path for the active platform."""
+    home = Path.home()
+    if sys.platform == "win32":
+        return home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    return home / ".config" / "powershell" / "Microsoft.PowerShell_profile.ps1"
+
+
+def _legacy_powershell_profile_path() -> Path | None:
+    """Return the Windows PowerShell 5.x profile path, or None when not Windows.
+
+    Returned even when the file does not yet exist. The existence
+    check happens in ``_startup_files_to_install`` /
+    ``_startup_files_with_blocks`` (mirroring how bash's
+    ``.bash_profile`` is handled): nah installs the snippet only
+    when the user already has a Windows PowerShell 5.x profile;
+    it does not bootstrap a profile for legacy PowerShell on the
+    user's behalf.
+    """
+    if sys.platform != "win32":
+        return None
+    return Path.home() / "Documents" / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1"
 
 
 def _startup_files_to_install(paths: ShellPaths) -> list[Path]:
