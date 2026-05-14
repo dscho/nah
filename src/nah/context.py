@@ -108,7 +108,7 @@ def resolve_context(
         return taxonomy.ASK, "browser_file: path extraction pending"
 
     if action_type == taxonomy.LANG_EXEC:
-        return resolve_lang_exec_context(target_path, inline_code=inline_code)
+        return resolve_lang_exec_context(target_path, inline_code=inline_code, tokens=tokens)
 
     return taxonomy.ASK, f"{action_type}: no context resolver"
 
@@ -695,6 +695,7 @@ def resolve_lang_exec_context(
     target_path: str | None,
     *,
     inline_code: str | None = None,
+    tokens: list[str] | None = None,
 ) -> tuple[str, str]:
     """Resolve lang_exec context by checking script path and contents.
 
@@ -703,19 +704,38 @@ def resolve_lang_exec_context(
     For script files: checks path sensitivity, reads file, inspects contents.
     Content inspection runs even for trusted/in-project paths — being inside
     the project is necessary but not sufficient for lang_exec.
+
+    When ``tokens`` identifies the interpreter as PowerShell (``pwsh``,
+    ``powershell``, or the ``.exe`` variant), the inline code is also
+    routed through :func:`nah.powershell.classify_powershell` so
+    PowerShell-specific dangers (``Invoke-Expression``, ``iex``-piped
+    pipelines, mutating cmdlets) surface even though the surrounding
+    Bash tokenizer would not recognize them. The PowerShell verdict
+    folds into the Bash content-scan verdict by worst-wins.
     """
     if not target_path:
         if inline_code:
             from nah.content import scan_content, format_content_message
             matches = scan_content(inline_code)
+            bash_decision = taxonomy.ALLOW
+            bash_reason = "lang_exec: inline clean"
             if matches:
                 worst = "ask"
                 for m in matches:
                     if m.policy == "block":
                         worst = "block"
                         break
-                return worst, format_content_message("inline", matches)
-            return taxonomy.ALLOW, "lang_exec: inline clean"
+                bash_decision = worst
+                bash_reason = format_content_message("inline", matches)
+            # PowerShell-specific classification of pwsh/powershell shell-outs.
+            ps_decision, ps_reason = _classify_powershell_inline(tokens, inline_code)
+            if ps_decision is None:
+                return bash_decision, bash_reason
+            # Fold by worst-wins. The Bash side already detected things
+            # like literal "rm -rf" appearing as text in the payload;
+            # the PowerShell side adds iex / Invoke-Expression / mutating
+            # cmdlets that the Bash content scan does not know about.
+            return _worst_decision(bash_decision, bash_reason, ps_decision, ps_reason)
         return taxonomy.ASK, "lang_exec: inline execution"
 
     from nah.config import get_config
@@ -757,6 +777,57 @@ def resolve_lang_exec_context(
                 break
         reason = format_content_message("script", matches)
         return worst, reason
+
+    return taxonomy.ALLOW, f"script clean: {paths.friendly_path(resolved)}"
+
+
+_POWERSHELL_INTERPRETERS = frozenset({
+    "pwsh", "pwsh.exe", "powershell", "powershell.exe",
+})
+
+
+def _classify_powershell_inline(
+    tokens: list[str] | None,
+    inline_code: str,
+) -> tuple[str | None, str | None]:
+    """Return PowerShell-classifier verdict for a pwsh/powershell shell-out.
+
+    Returns ``(None, None)`` when the tokens do not name a PowerShell
+    interpreter, so the Bash content scan stays authoritative for
+    POSIX-shell shell-outs (``bash -c``, ``sh -c``, etc.).
+    """
+    if not tokens:
+        return None, None
+    cmd_lower = os.path.basename(tokens[0]).lower()
+    if cmd_lower not in _POWERSHELL_INTERPRETERS:
+        return None, None
+    from nah.powershell import classify_powershell
+    result = classify_powershell(inline_code)
+    ps_decision = result.get("decision", taxonomy.ALLOW)
+    if ps_decision == taxonomy.ALLOW:
+        return taxonomy.ALLOW, "powershell shell-out: inline clean"
+    reason = result.get("reason") or "powershell shell-out flagged content"
+    return ps_decision, f"powershell shell-out: {reason}"
+
+
+_STRICTNESS = {taxonomy.ALLOW: 0, taxonomy.ASK: 1, taxonomy.BLOCK: 2}
+
+
+def _worst_decision(
+    a_decision: str, a_reason: str, b_decision: str, b_reason: str,
+) -> tuple[str, str]:
+    """Return the strictest of two decisions, with its reason.
+
+    At equal strictness, ``b`` wins. The two callers in this module
+    both pass ``a = bash content scan`` and ``b = PowerShell
+    classifier``; the PowerShell classifier's reason is more
+    informative for PowerShell payloads than the Bash-side scan, so
+    surfacing it whenever it is at least as strict produces clearer
+    messages without weakening the verdict.
+    """
+    if _STRICTNESS.get(b_decision, 0) >= _STRICTNESS.get(a_decision, 0):
+        return b_decision, b_reason
+    return a_decision, a_reason
 
     return taxonomy.ALLOW, f"script clean: {paths.friendly_path(resolved)}"
 
