@@ -48,6 +48,141 @@ def _shell_localize(message: str, tool: str) -> str:
         return message.replace("in bash", "in PowerShell")
     return message
 
+_POWERSHELL_CMDLET_MESSAGES: dict[str, str] = {
+    # Filesystem deletion.
+    "remove-item": "this can delete files",
+    "rm": "this can delete files",
+    "ri": "this can delete files",
+    "del": "this can delete files",
+    "erase": "this can delete files",
+    "rd": "this can delete files",
+    "rmdir": "this can delete files",
+    # File writes.
+    "set-content": "this writes to a file",
+    "sc": "this writes to a file",
+    "add-content": "this appends to a file",
+    "ac": "this appends to a file",
+    "out-file": "this writes to a file",
+    # Filesystem creation / movement.
+    "new-item": "this creates a new file or directory",
+    "ni": "this creates a new file or directory",
+    "md": "this creates a new file or directory",
+    "mkdir": "this creates a new file or directory",
+    "set-item": "this writes to a registry or filesystem item",
+    "set-itemproperty": "this writes to a registry or filesystem item",
+    "copy-item": "this copies files",
+    "cp": "this copies files",
+    "copy": "this copies files",
+    "cpi": "this copies files",
+    "move-item": "this moves files",
+    "mv": "this moves files",
+    "move": "this moves files",
+    "mi": "this moves files",
+    "rename-item": "this renames a file",
+    "ren": "this renames a file",
+    "rni": "this renames a file",
+    # Pipeline tee.
+    "tee-object": "this writes pipeline output to a file or variable",
+    "tee": "this writes pipeline output to a file or variable",
+    # Shell state.
+    "set-location": "this changes the working directory",
+    "cd": "this changes the working directory",
+    "chdir": "this changes the working directory",
+    "sl": "this changes the working directory",
+    "push-location": "this pushes a directory onto the location stack",
+    "pushd": "this pushes a directory onto the location stack",
+    "pop-location": "this pops a directory from the location stack",
+    "popd": "this pops a directory from the location stack",
+    # Process control.
+    "stop-process": "this can kill running processes",
+    "kill": "this can kill running processes",
+    "spps": "this can kill running processes",
+    "start-process": "this starts a new process",
+    "saps": "this starts a new process",
+    "start": "this starts a new process",
+    # Network.
+    "invoke-webrequest": "this contacts the network",
+    "iwr": "this contacts the network",
+    "curl": "this contacts the network",
+    "invoke-restmethod": "this contacts a network API",
+    "irm": "this contacts a network API",
+    # Security and credentials.
+    "set-executionpolicy": "this changes PowerShell's script execution policy",
+    "convertfrom-securestring": "this exposes a secured string in plain form",
+    "convertto-securestring": "this converts text into a secured string",
+    # Module / variable / scope mutation.
+    "import-module": "this loads a PowerShell module",
+    "ipmo": "this loads a PowerShell module",
+    "set-variable": "this sets a shell variable",
+    "sv": "this sets a shell variable",
+    "set": "this sets a shell variable",
+    "new-variable": "this defines a shell variable",
+    "nv": "this defines a shell variable",
+    # Remote command execution.
+    "invoke-command": "this runs a command, possibly on a remote machine",
+    "icm": "this runs a command, possibly on a remote machine",
+    "enter-pssession": "this opens an interactive remote PowerShell session",
+    "etsn": "this opens an interactive remote PowerShell session",
+    "new-pssession": "this opens a remote PowerShell session",
+    "nsn": "this opens a remote PowerShell session",
+    # Service control.
+    "new-service": "this creates a system service",
+    "stop-service": "this stops a system service",
+    "restart-service": "this restarts a system service",
+    "start-service": "this starts a system service",
+    "set-service": "this changes a system service",
+    # Background script-block executors.
+    "start-job": "this runs a PowerShell script block in the background",
+    "sajb": "this runs a PowerShell script block in the background",
+    "start-threadjob": "this runs a PowerShell script block in a background thread",
+    "invoke-job": "this resumes a background job",
+    "wait-job": "this waits for a background job",
+    "wjb": "this waits for a background job",
+    "receive-job": "this receives output from a background job",
+    "rcjb": "this receives output from a background job",
+    "register-objectevent": "this registers a script block to run when an object emits an event",
+    "register-engineevent": "this registers a script block to run on a PowerShell engine event",
+    "register-wmievent": "this registers a script block to run on a WMI event",
+    "new-event": "this raises a custom event",
+    "trace-command": "this runs a command under tracing, executing it in the process",
+    # .NET shim.
+    "add-type": "this loads .NET code into the session",
+    # Misc state mutation.
+    "clear-host": "this clears the terminal screen",
+    "cls": "this clears the terminal screen",
+}
+
+
+_POWERSHELL_REASON_RE = re.compile(
+    r"PowerShell cmdlet needs review:\s*([A-Za-z0-9\-\.%\?]+)",
+    re.IGNORECASE,
+)
+
+
+def _powershell_cmdlet_message(reason: str) -> str:
+    """Translate a `PowerShell cmdlet needs review: <name>` reason to plain English.
+
+    Returns a phrase like ``"this can delete files (Remove-Item)"`` when
+    the cmdlet is in the action map, or ``""`` to signal "use the
+    default reason resolution path". Multiple cmdlets in the same
+    reason (semicolon-separated) all get translated and joined.
+    """
+    matches = _POWERSHELL_REASON_RE.findall(reason)
+    if not matches:
+        return ""
+    seen: list[str] = []
+    parts: list[str] = []
+    for raw in matches:
+        cmdlet = raw.lower()
+        if cmdlet in seen:
+            continue
+        seen.append(cmdlet)
+        phrase = _POWERSHELL_CMDLET_MESSAGES.get(cmdlet)
+        if not phrase:
+            return ""
+        parts.append(f"{phrase} ({raw})")
+    return "; ".join(parts)
+
 _ACTION_MESSAGES = {
     taxonomy.FILESYSTEM_READ: "this reads files",
     taxonomy.FILESYSTEM_WRITE: "this writes files",
@@ -142,6 +277,15 @@ def human_reason(
         return _finalize("this shell loop uses shell expansion nah cannot inspect safely")
     if "hidden by shell syntax" in clean_reason.lower():
         return _finalize("this shell loop hides a variable in shell syntax nah cannot inspect safely")
+
+    # PowerShell-cmdlet ASKs surface as "PowerShell cmdlet needs review:
+    # <name>" out of the PowerShell classifier. Translate the cmdlet
+    # name into an action-oriented English phrase so a user who does
+    # not know what e.g. Set-Content does still gets a plain-English
+    # description of what the call would do.
+    ps_message = _powershell_cmdlet_message(clean_reason)
+    if ps_message:
+        return _finalize(ps_message)
 
     pattern_message = _reason_pattern_message(clean_reason, tool)
     if pattern_message:
@@ -240,7 +384,16 @@ def _finalize(text: str) -> str:
 
 
 def _looks_technical(text: str) -> bool:
-    return bool(_ACTION_ID_RE.search(text) or "\u2192" in text or "->" in text)
+    if _ACTION_ID_RE.search(text) or "\u2192" in text or "->" in text:
+        return True
+    # The PowerShell classifier writes "PowerShell cmdlet needs review:
+    # <name>" directly to human_reason. Treat that as technical so the
+    # enrich_decision re-resolution pass routes it through
+    # _powershell_cmdlet_message and substitutes a plain-English
+    # action phrase.
+    if "powershell cmdlet needs review:" in text.lower():
+        return True
+    return False
 
 
 def _sanitize_text(value: str) -> str:
