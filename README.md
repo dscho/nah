@@ -96,6 +96,7 @@ secret storage. Then connect the runtime you want to protect:
 | --- | --- |
 | Claude Code | `nah run claude` |
 | Codex | `nah codex setup`, then `nah run codex` |
+| GitHub Copilot CLI | `nah install copilot` (then run `copilot` normally, or `nah run copilot`) |
 | Your shell | `nah install bash`, `nah install zsh`, or `nah install pwsh` |
 
 For Codex, run setup before the first protected session. Then open `/hooks` on
@@ -124,7 +125,8 @@ installed direct hooks, run `nah uninstall claude` before enabling it.
 
 See the [full install docs](https://nah.build/install/).
 Runtime guides: [Claude Code](https://nah.build/runtimes/claude-code/),
-[Codex](https://nah.build/runtimes/codex/), and
+[Codex](https://nah.build/runtimes/codex/),
+[GitHub Copilot CLI](https://nah.build/runtimes/copilot-cli/), and
 [Terminal Guard](https://nah.build/runtimes/terminal-guard/).
 
 **Don't use `--dangerously-skip-permissions` or `--enable-auto-mode`** — just
@@ -191,6 +193,7 @@ nah guards the approval points each runtime exposes:
 | --- | --- |
 | Claude Code | Bash, file, search, notebook, and MCP tool calls before execution |
 | Codex | Local interactive Bash, MCP, and `apply_patch` permission requests |
+| GitHub Copilot CLI | Bash and PowerShell commands, file reads/writes/edits, glob/grep, web_fetch, and MCP tool calls before execution |
 | Your shell | Commands you type yourself in guarded bash/zsh sessions |
 
 Run the audit yourself:
@@ -274,7 +277,9 @@ nah codex setup                        # set up Codex rules
 nah run codex                          # protect one Codex session
 nah run codex --sandbox workspace-write # use Codex workspace sandboxing
 nah run codex --confirm-edits           # also confirm safe project edits
+nah run copilot                        # protect one GitHub Copilot CLI session
 nah install claude                     # protect normal Claude Code sessions
+nah install copilot                    # protect normal GitHub Copilot CLI sessions
 nah install bash                       # guard commands you type in bash
 nah install zsh                        # guard commands you type in zsh
 nah install pwsh                       # guard commands you type in PowerShell (pwsh)
