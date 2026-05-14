@@ -287,3 +287,91 @@ def test_brand_auto_color_requires_prompt_surface(monkeypatch):
 
     assert plain == "nah paused: this can rewrite Git history."
     assert colored == "\033[33mnah paused: this can rewrite Git history.\033[0m"
+
+
+# ---------------------------------------------------------------------------
+# PowerShell cmdlet -> action-oriented message translation
+# ---------------------------------------------------------------------------
+
+
+class TestPowerShellCmdletMessages:
+    """The PowerShell classifier emits "PowerShell cmdlet needs review:
+    <name>" reasons. enrich_decision must replace them with
+    plain-English action phrases that keep the cmdlet name as
+    supporting detail.
+    """
+
+    def _enrich(self, ps_reason: str) -> str:
+        decision = {
+            "decision": taxonomy.ASK,
+            "reason": ps_reason,
+            "human_reason": ps_reason,
+            "_meta": {"stages": [{
+                "action_type": "powershell_unknown",
+                "decision": "ask",
+                "policy": "ask",
+                "reason": ps_reason,
+            }]},
+        }
+        messages.enrich_decision(decision, tool="PowerShell")
+        return decision["human_reason"]
+
+    def test_remove_item_translates_to_delete_files(self):
+        out = self._enrich("PowerShell cmdlet needs review: remove-item")
+        assert "delete files" in out
+        assert "remove-item" in out
+        assert_clean(out)
+
+    def test_remove_item_alias_rm_translates_consistently(self):
+        out = self._enrich("PowerShell cmdlet needs review: rm")
+        assert "delete files" in out
+        assert "rm" in out
+
+    def test_set_content_translates_to_writes_file(self):
+        out = self._enrich("PowerShell cmdlet needs review: set-content")
+        assert "writes to a file" in out
+        assert "set-content" in out
+
+    def test_invoke_webrequest_translates_to_network(self):
+        out = self._enrich("PowerShell cmdlet needs review: invoke-webrequest")
+        assert "contacts the network" in out
+        assert "invoke-webrequest" in out
+
+    def test_set_executionpolicy_names_the_setting(self):
+        out = self._enrich("PowerShell cmdlet needs review: set-executionpolicy")
+        assert "execution policy" in out
+
+    def test_start_job_mentions_background(self):
+        out = self._enrich("PowerShell cmdlet needs review: start-job")
+        assert "background" in out
+
+    def test_set_location_translates_to_chdir(self):
+        out = self._enrich("PowerShell cmdlet needs review: set-location")
+        assert "working directory" in out
+
+    def test_unknown_cmdlet_falls_back_to_resolver_default(self):
+        out = self._enrich("PowerShell cmdlet needs review: get-weirdfuturecmdlet")
+        assert "needs confirmation" in out
+        assert_clean(out)
+
+    def test_multiple_cmdlets_in_one_reason_translate_each(self):
+        out = self._enrich(
+            "PowerShell cmdlet needs review: start-job; "
+            "PowerShell cmdlet needs review: remove-item"
+        )
+        assert "background" in out
+        assert "delete files" in out
+
+    def test_no_cmdlet_match_means_no_translation(self):
+        # The translator returns "" when the reason does not match
+        # the canonical "PowerShell cmdlet needs review: <name>"
+        # pattern at all, so the resolver continues with its other
+        # branches.
+        result = messages._powershell_cmdlet_message("some unrelated reason text")
+        assert result == ""
+
+    def test_translation_preserves_cmdlet_letter_case(self):
+        # Cmdlet names round-trip with their original case for user
+        # familiarity, even though the lookup is case-insensitive.
+        out = self._enrich("PowerShell cmdlet needs review: Remove-Item")
+        assert "Remove-Item" in out
