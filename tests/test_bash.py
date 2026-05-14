@@ -1588,15 +1588,20 @@ class TestDecomposition:
         assert "script outside project" not in r.reason
 
     @pytest.mark.parametrize("command,pattern", [
-        (r"powershell -Command Remove-Item -Recurse C:\tmp", "Remove-Item -Recurse"),
+        (r"powershell -Command Remove-Item -Recurse C:\tmp", "remove-item"),
         (r"cmd /c del /f C:\tmp\file.txt", "del /f"),
     ])
     def test_windows_shell_inline_scans_multi_token_payload(self, project_root, command, pattern):
         r = classify_command(command)
         assert r.final_decision == "ask"
         assert r.stages[0].action_type == "lang_exec"
-        assert "content inspection" in r.reason
-        assert pattern in r.reason
+        # PowerShell payloads now route through the dedicated PowerShell
+        # classifier so the reason cites the offending cmdlet
+        # ("PowerShell cmdlet needs review: remove-item"). cmd /c
+        # payloads still go through the Bash content scan ("content
+        # inspection ... del /f"). Both shapes need to surface a
+        # human-readable concern naming the dangerous fragment.
+        assert pattern in r.reason.lower()
 
 
     @pytest.mark.parametrize("redirect", [">", ">>", "1>", "1>>", "2>", "2>>", "&>", "&>>"])
