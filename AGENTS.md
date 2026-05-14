@@ -1,6 +1,6 @@
 # nah
 
-Context aware safety guard for coding agents. Guards Claude Code tools and local interactive Codex sessions, with an optional bash/zsh terminal guard as a bonus. Deterministic, zero tokens, milliseconds.
+Context aware safety guard for coding agents. Guards Claude Code tools, local interactive Codex sessions, and GitHub Copilot CLI tool calls, with an optional bash/zsh terminal guard as a bonus. Deterministic, zero tokens, milliseconds.
 
 **Tagline:** "Safeguard your vibes. Keep your flow state."
 
@@ -20,7 +20,8 @@ Context aware safety guard for coding agents. Guards Claude Code tools and local
 - **LLM layer** uses `urllib.request` (stdlib) — no `requests` dependency
 - **Entry point**: `nah` CLI via `nah.cli:main`
 - **Config format**: YAML (`~/.config/nah/config.yaml` + `.nah.yaml` per project)
-- **Hook script**: `~/.claude/hooks/nah_guard.py` (installed read-only, chmod 444)
+- **Hook script**: `~/.claude/hooks/nah_guard.py` (Claude, installed read-only, chmod 444); `~/.copilot/hooks/nah.json` (GitHub Copilot CLI, same chmod posture)
+- **Optional extras**: `[powershell]` ships a tree-sitter PowerShell classifier; falls back to the stdlib-only hand-rolled scanner when absent
 - **Testing commands**: Always use `nah test "..."` — never `python -m nah ...` (nah flags the latter as `lang_exec`)
 
 ## Error Handling
@@ -59,11 +60,15 @@ except Exception:
 # Setup
 nah run claude           # launch claude with nah active (this session only)
 nah run codex            # launch codex with nah active (this session only)
+nah run copilot          # launch GitHub Copilot CLI with nah's preToolUse hook verified
 nah install claude       # install direct Claude Code hooks (permanent)
+nah install copilot      # install GitHub Copilot CLI preToolUse hook
 nah install bash         # install interactive bash guard
 nah install pwsh         # install interactive PowerShell (pwsh) guard via PSReadLine
 nah uninstall claude     # clean direct Claude Code removal
+nah uninstall copilot    # remove ~/.copilot/hooks/nah.json
 nah update claude        # update hook after pip upgrade
+nah update copilot       # rewrite the Copilot hook with the current interpreter path
 
 # Dry-run classification (no side effects)
 nah test "rm -rf /"                        # test a Bash command
