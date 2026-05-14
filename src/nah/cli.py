@@ -781,6 +781,57 @@ def cmd_test(args: argparse.Namespace) -> None:
                             print(f"LLM decision: (uncertain or unavailable) [{statuses}]")
                         else:
                             print("LLM decision: (no providers responded)")
+    elif tool == "PowerShell":
+        # PowerShell: classify a command string via nah.powershell.
+        # Mirrors --tool Bash but routes through classify_powershell so
+        # users can dry-run PowerShell payloads against the same engine
+        # that guards Copilot CLI's `powershell` tool and pwsh shell-outs
+        # from Claude / Codex Bash.
+        if not input_args:
+            print("Error: nah test --tool PowerShell requires a command string",
+                  file=sys.stderr)
+            raise SystemExit(1)
+        command = input_args[0] if len(input_args) == 1 else " ".join(input_args)
+        from nah.powershell import classify_powershell
+        try:
+            from nah._powershell_treesitter import classify_treesitter  # noqa: F401
+
+            engine = "tree-sitter"
+        except ImportError:
+            engine = "hand-rolled"
+
+        decision = classify_powershell(command)
+        _add_human_reason(decision, tool)
+        stages = decision.get("_meta", {}).get("stages", [])
+        if json_output:
+            print(json.dumps({
+                "target": target,
+                "tool": tool,
+                "command": command,
+                "engine": engine,
+                "decision": decision["decision"],
+                "reason": decision.get("reason", ""),
+                "human_reason": decision.get("human_reason", ""),
+                "stages": stages,
+            }))
+            return
+        if target:
+            print(f"Target:   {target}")
+        print(f"Tool:     {tool}")
+        print(f"Engine:   {engine}")
+        print(f"Command:  {command}")
+        if stages:
+            print("Stages:")
+            for i, s in enumerate(stages, 1):
+                action = s.get("action_type", "")
+                stage_decision = s.get("decision", "")
+                stage_reason = s.get("reason", "")
+                print(f"  [{i}] {action} → {stage_decision} ({stage_reason})")
+        print(f"Decision: {decision['decision'].upper()}")
+        reason = decision.get("reason", "")
+        if reason:
+            print(f"Reason:   {reason}")
+        _print_user_message(decision)
     elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         # Write-like tools: path + content inspection
         from nah.hook import handle_write, handle_edit, handle_multiedit, handle_notebookedit

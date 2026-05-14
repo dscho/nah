@@ -70,6 +70,7 @@ nah test "git push --force"                # see action type + policy
 nah test --tool Read ~/.ssh/id_rsa         # test Read tool path check
 nah test --tool Write ./out.txt --content "BEGIN PRIVATE KEY"  # test content inspection
 nah test --tool Grep --pattern "password"  # test credential search detection
+nah test --tool PowerShell "iex 'evil'"    # dry-run PowerShell payload (Copilot powershell tool, pwsh shell-outs)
 
 # Inspect
 nah types                # list all 40 action types with default policies
