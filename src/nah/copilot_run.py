@@ -245,17 +245,32 @@ def _safe_glob_json(directory: Path) -> list[Path]:
 
 
 def _entry_contains_nah(entry) -> bool:
-    """Check whether a Copilot hook entry runs nah's preToolUse command."""
+    """Check whether a Copilot hook entry runs nah's preToolUse command.
+
+    Copilot CLI's hook schema places command records directly under
+    ``hooks.PreToolUse`` as flat ``{"type": "command", "bash": "..."}``
+    objects (per the version-1 schema documented at
+    https://docs.github.com/en/copilot/reference/hooks-reference).
+    For robustness this helper also recognizes a Claude-style nested
+    shape, ``{"hooks": [{"type": "command", "bash": "..."}]}``, in
+    case a user wrote their hooks file in that older form or copied
+    it from a cross-tool source.
+    """
     if not isinstance(entry, dict):
         return False
+    # Flat Copilot shape: the entry itself is the command record.
+    for field in ("bash", "command", "powershell"):
+        value = entry.get(field)
+        if isinstance(value, str) and _NAH_HOOK_MARKER in value:
+            return True
+    # Nested Claude-style shape: { "hooks": [<command record>, ...] }.
     hooks_list = entry.get("hooks")
-    if not isinstance(hooks_list, list):
-        return False
-    for h in hooks_list:
-        if not isinstance(h, dict):
-            continue
-        for field in ("bash", "command", "powershell"):
-            value = h.get(field)
-            if isinstance(value, str) and _NAH_HOOK_MARKER in value:
-                return True
+    if isinstance(hooks_list, list):
+        for h in hooks_list:
+            if not isinstance(h, dict):
+                continue
+            for field in ("bash", "command", "powershell"):
+                value = h.get(field)
+                if isinstance(value, str) and _NAH_HOOK_MARKER in value:
+                    return True
     return False
