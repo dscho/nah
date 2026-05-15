@@ -48,6 +48,43 @@ _NORMALIZE_DISPATCH = {
 }
 
 
+# Conservative allowlist of Copilot utility tools with no file or network
+# side effects. These are UI labels, the tool-catalog search, the
+# nah-managed memory store, read-only background-agent introspection, and
+# static-documentation fetches. They never need a per-call user decision.
+#
+# Tools deliberately NOT on this list (and therefore still classified):
+#   - write_bash / stop_bash: send input to or terminate a running bash
+#     session, which can produce arbitrary side effects.
+#   - manage_schedule: schedules recurring prompts that re-enter the agent
+#     loop and may invoke any tool.
+#   - web_search / web_fetch: data-exfil surfaces; web_fetch is already
+#     routed through the synthetic-curl path on the Bash classifier.
+#   - sql / session_store_sql: operate on user-visible state.
+#   - mcp__* and any github-mcp-server-*: vary per server; defer to the
+#     unknown-tool ASK path so the user explicitly approves.
+_HARMLESS_COPILOT_TOOLS = frozenset({
+    "ask_user",                        # prompts the user; never executes a tool
+    "report_intent",                   # updates the visible "what I'm doing" label
+    "tool_search_tool_regex",          # searches the available tool catalog by regex
+    "store_memory",                    # writes to the nah-managed memory store
+    "vote_memory",                     # votes on a memory store entry
+    "fetch_copilot_cli_documentation", # fetches static Copilot CLI documentation
+    "read_agent",                      # read-only background-agent introspection
+    "list_agents",                     # read-only background-agent listing
+    "list_bash",                       # read-only listing of running bash sessions
+})
+
+
+# Subagent-style Copilot tools. The spawned subagent's tool calls
+# re-enter preToolUse (PreToolUseHooksProcessor in app.js;
+# createSubagentSession inherits ``hooks: this.hooks``), so nah still
+# classifies every real side effect on arrival. The same property holds
+# for ``skill``: it dispatches a named skill that performs its work
+# through further tool calls, each of which re-enters the hook.
+_SUBAGENT_COPILOT_TOOLS = frozenset({"task", "skill"})
+
+
 def main(stdin=None, stdout=None) -> int:
     """Handle a Copilot CLI preToolUse hook invocation.
 
@@ -313,30 +350,28 @@ def _classify(canonical: str, tool_input: dict, raw_tool_name: str) -> dict:
             command = str(command)
         return classify_powershell(command)
 
-    # ask_user: harmless prompt to the user, never tool execution.
-    if raw_tool_name == "ask_user":
+    # Subagent spawners: every inner tool call re-enters preToolUse via
+    # the parent's hook chain, so nah classifies each real side effect on
+    # arrival. See _SUBAGENT_COPILOT_TOOLS for the membership rationale.
+    if raw_tool_name in _SUBAGENT_COPILOT_TOOLS:
         return {"decision": taxonomy.ALLOW, "_meta": {"stages": [{
             "action_type": taxonomy.UNKNOWN,
             "decision": taxonomy.ALLOW,
             "policy": taxonomy.ALLOW,
-            "reason": "ask_user is a user prompt, not a tool",
+            "reason": (
+                f"{raw_tool_name} subagent — inner tool calls re-enter preToolUse"
+            ),
         }]}}
 
-    # task: subagent spawn. Empirical inspection of the Copilot CLI
-    # source (PreToolUseHooksProcessor in app.js, used by every Session
-    # including those built by createSubagentSession with the parent's
-    # hooks inherited) confirms that every tool call made by a
-    # subagent re-enters preToolUse. Passing the task tool through is
-    # therefore safe: each inner tool call gets classified by nah on
-    # arrival, so the subagent prompt itself is not an exfiltration
-    # surface that bypasses the guard. The user still sees an explicit
-    # stage record so logs are self-explanatory.
-    if raw_tool_name == "task":
+    # Harmless Copilot utility tools: UI labels, memory store, agent
+    # introspection, doc fetches. See _HARMLESS_COPILOT_TOOLS for the
+    # membership rationale and the explicit exclusions.
+    if raw_tool_name in _HARMLESS_COPILOT_TOOLS:
         return {"decision": taxonomy.ALLOW, "_meta": {"stages": [{
             "action_type": taxonomy.UNKNOWN,
             "decision": taxonomy.ALLOW,
             "policy": taxonomy.ALLOW,
-            "reason": "task subagent — inner tool calls re-enter preToolUse",
+            "reason": f"{raw_tool_name}: harmless Copilot utility tool",
         }]}}
 
     # Bash, web_fetch (via synthetic curl).

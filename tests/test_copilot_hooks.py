@@ -257,6 +257,20 @@ def test_task_subagent_is_allowed(project_root) -> None:
     assert d["permissionDecision"] == "allow"
 
 
+def test_skill_subagent_is_allowed(project_root) -> None:
+    """``skill`` is ALLOW for the same reason as ``task``.
+
+    A skill dispatches a named workflow whose individual tool calls
+    flow through preToolUse on arrival, so nah keeps classifying real
+    side effects.
+    """
+    d = _decision({
+        "tool_name": "skill",
+        "tool_input": {"skill": "some-skill"},
+    })
+    assert d["permissionDecision"] == "allow"
+
+
 def test_ask_user_is_allowed(project_root) -> None:
     """``ask_user`` just shows a prompt; it never executes a tool."""
     d = _decision({
@@ -264,6 +278,42 @@ def test_ask_user_is_allowed(project_root) -> None:
         "tool_input": {"question": "anything"},
     })
     assert d["permissionDecision"] == "allow"
+
+
+@pytest.mark.parametrize("tool_name", [
+    "report_intent",
+    "tool_search_tool_regex",
+    "store_memory",
+    "vote_memory",
+    "fetch_copilot_cli_documentation",
+    "read_agent",
+    "list_agents",
+    "list_bash",
+])
+def test_harmless_copilot_utility_tools_are_allowed(project_root, tool_name) -> None:
+    """Conservative allowlist: UI labels, memory store, agent introspection,
+    static doc fetches. No file or network side effects, so no per-call ask.
+
+    Tools deliberately omitted from this list — write_bash, stop_bash,
+    manage_schedule, sql, session_store_sql, web_fetch, web_search, MCP
+    tools — keep going through the classifier or the unknown-tool ASK
+    path; see _HARMLESS_COPILOT_TOOLS in copilot_hooks for the rationale.
+    """
+    d = _decision({"tool_name": tool_name, "tool_input": {}})
+    assert d["permissionDecision"] == "allow", (tool_name, d)
+
+
+def test_write_bash_still_classified(project_root) -> None:
+    """``write_bash`` sends keystrokes to a running bash session and
+    therefore must NOT be on the harmless allowlist. It falls into the
+    unknown-tool ASK path (or whatever classifier matches its
+    canonicalized name) so the user can review it.
+    """
+    d = _decision({
+        "tool_name": "write_bash",
+        "tool_input": {"shellId": "1", "input": "rm -rf /"},
+    })
+    assert d["permissionDecision"] in {"ask", "deny"}
 
 
 def test_powershell_dispatches_to_classifier(project_root) -> None:
