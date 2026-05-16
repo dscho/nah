@@ -161,27 +161,17 @@ def classify_command(command: str) -> ClassifyResult:
         )
         return result
 
-    # Load config for custom classify/actions — three-table lookup
-    global_table = None
-    builtin_table = None
-    project_table = None
-    user_actions = None
-    profile = "full"
-    trust_project = False
-    try:
-        from nah.config import get_config  # lazy import
-        cfg = get_config()
-        profile = cfg.profile
-        trust_project = cfg.project_config_trusted
-        if cfg.classify_global:
-            global_table = taxonomy.build_user_table(cfg.classify_global)
-        builtin_table = taxonomy.get_builtin_table(cfg.profile)
-        if cfg.project_config_trusted and cfg.classify_project:
-            project_table = taxonomy.build_user_table(cfg.classify_project)
-        if cfg.actions:
-            user_actions = cfg.actions
-    except Exception as e:
-        sys.stderr.write(f"nah: config load error: {e}\n")
+    # Load config for custom classify/actions — three-table lookup.
+    # The shared kernel helper does the lazy import, the build_user_table
+    # calls, and the fail-soft error handling, so any future classifier
+    # (PowerShell, etc.) gets the same view of user config for free.
+    _ctx = taxonomy.load_classifier_context()
+    global_table = _ctx["global_table"]
+    builtin_table = _ctx["builtin_table"]
+    project_table = _ctx["project_table"]
+    user_actions = _ctx["user_actions"]
+    profile = _ctx["profile"]
+    trust_project = _ctx["trust_project"]
 
     # --- FD-103: classify extracted substitution inners ---
     _kw = dict(global_table=global_table, builtin_table=builtin_table,

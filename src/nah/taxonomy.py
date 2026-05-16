@@ -491,6 +491,58 @@ def _prefix_match(tokens: list[str], table: list[tuple[tuple[str, ...], str]]) -
     return UNKNOWN
 
 
+def load_classifier_context() -> dict:
+    """Load nah's config and return the kwargs every classifier needs
+    to pass to :func:`classify_tokens` plus the ``user_actions`` override
+    map used by :func:`get_policy`.
+
+    This is the shared kernel context that lets the bash classifier and
+    the PowerShell classifier (and anything else that follows the same
+    tokens-then-taxonomy pipeline) reach the same verdict for the same
+    external command, without each one re-implementing config loading.
+
+    Returns a dict with keys::
+
+        global_table, builtin_table, project_table   — passed positionally
+        profile, trust_project                       — kwargs
+        user_actions                                 — caller passes to get_policy
+
+    All keys are always present. On any config-load failure the function
+    falls back to the same defaults bash uses (profile="full",
+    trust_project=False, all tables None), mirroring
+    :func:`nah.bash.classify_command`'s tolerance. The error is written
+    to stderr so misconfiguration is visible without being fatal.
+    """
+    global_table = None
+    builtin_table = None
+    project_table = None
+    user_actions = None
+    profile = "full"
+    trust_project = False
+    try:
+        from nah.config import get_config  # lazy import — avoids cycle at module load
+        cfg = get_config()
+        profile = cfg.profile
+        trust_project = cfg.project_config_trusted
+        if cfg.classify_global:
+            global_table = build_user_table(cfg.classify_global)
+        builtin_table = get_builtin_table(cfg.profile)
+        if cfg.project_config_trusted and cfg.classify_project:
+            project_table = build_user_table(cfg.classify_project)
+        if cfg.actions:
+            user_actions = cfg.actions
+    except Exception as e:  # noqa: BLE001 — match bash.classify_command tolerance
+        sys.stderr.write(f"nah: config load error: {e}\n")
+    return {
+        "global_table": global_table,
+        "builtin_table": builtin_table,
+        "project_table": project_table,
+        "user_actions": user_actions,
+        "profile": profile,
+        "trust_project": trust_project,
+    }
+
+
 def classify_tokens(
     tokens: list[str],
     global_table: list | None = None,
