@@ -153,6 +153,7 @@ class _Stage:
     raw: str               # the original stage text (whitespace-trimmed)
     has_dynamic: bool      # variable expansion, subexpression, call op, etc.
     has_redirect: bool = False  # output redirection (>, >>, 2>, *>, etc.)
+    tokens: tuple[str, ...] = ()  # argv-style tokens for cross-shell delegation
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +599,118 @@ def _parse_stage(stage_text: str) -> _Stage:
             continue
         i += 1
 
-    return _Stage(cmdlet=cmdlet, raw=text, has_dynamic=has_dynamic, has_redirect=has_redirect)
+    return _Stage(
+        cmdlet=cmdlet,
+        raw=text,
+        has_dynamic=has_dynamic,
+        has_redirect=has_redirect,
+        tokens=_tokenize_stage_for_taxonomy(text) if not has_dynamic else (),
+    )
+
+
+def _tokenize_stage_for_taxonomy(text: str) -> tuple[str, ...]:
+    """Split a PowerShell stage into argv-style tokens for taxonomy delegation.
+
+    Only invoked for stages whose ``_parse_stage`` walk completed without
+    setting ``has_dynamic``: no variables, no subexpressions, no script
+    blocks, no parenthesized expressions, no backtick escapes, and no
+    double-quoted strings whose interior interpolates anything. Inside
+    those constraints PowerShell's token boundaries are simple whitespace
+    splitting modulo single- and double-quoted runs that carry verbatim
+    content. A leading ``& `` call operator (literal operand only, by
+    the same ``has_dynamic`` precondition) is stripped here so the
+    operand becomes ``tokens[0]`` and the taxonomy sees the same shape
+    the Bash classifier would.
+
+    The tokens this function produces are intended for
+    :func:`nah.taxonomy.classify_tokens`, so they must round-trip
+    through that function's command-name normalization (``/usr/bin/git``
+    → ``git``, ``python3.12`` → ``python3``, ``C:\\path\\cmd.exe`` →
+    ``cmd``). No normalization is applied here; the kernel does it.
+
+    Returns an empty tuple when the text is empty or when an unterminated
+    quoted run is found (caller treats empty tokens as "do not
+    delegate" and falls back to the cmdlet-set check).
+    """
+    tokens: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        while i < n and text[i] in (" ", "\t"):
+            i += 1
+        if i >= n:
+            break
+
+        # Leading `& <bareword>` call operator: strip the ``&`` so the
+        # operand drives classification. Requires whitespace separation
+        # so we never swallow an operator like ``&&`` (which is split off
+        # at the pipeline-separator layer, not here, but keep the guard
+        # tight anyway).
+        if not tokens and text[i] == "&" and i + 1 < n and text[i + 1] in (" ", "\t"):
+            i += 1
+            continue
+
+        buf: list[str] = []
+        while i < n and text[i] not in (" ", "\t"):
+            ch = text[i]
+            if ch == "'":
+                j = text.find("'", i + 1)
+                if j == -1:
+                    return ()
+                buf.append(text[i + 1:j])
+                i = j + 1
+            elif ch == '"':
+                j = text.find('"', i + 1)
+                if j == -1:
+                    return ()
+                buf.append(text[i + 1:j])
+                i = j + 1
+            else:
+                buf.append(ch)
+                i += 1
+        tokens.append("".join(buf))
+    return tuple(tokens)
+
+
+def _delegate_to_taxonomy(tokens: tuple[str, ...]) -> tuple[str, str] | None:
+    """Classify an external-command stage via the shared taxonomy kernel.
+
+    Used when a stage's leading token is not a PowerShell cmdlet — think
+    ``git``, ``gh``, ``glab``, ``npm``, ``pip``, ``cargo``, ``docker``,
+    ``kubectl`` — i.e., a tool that would be classified identically when
+    invoked from bash. The cross-shell guarantee is intentional: nah's
+    per-tool action-type assignment is shell-agnostic, so it must not
+    drift between two parallel safelists.
+
+    Returns ``(decision, reason)`` where ``decision`` is ``"allow"`` /
+    ``"ask"`` / ``"block"``, or ``None`` when the kernel returns UNKNOWN
+    for the token sequence. Callers that get ``None`` fall back to the
+    existing "unrecognized PowerShell cmdlet" ASK path.
+    """
+    if not tokens:
+        return None
+
+    from nah import taxonomy
+
+    ctx = taxonomy.load_classifier_context()
+    action_type = taxonomy.classify_tokens(
+        list(tokens),
+        ctx["global_table"],
+        ctx["builtin_table"],
+        ctx["project_table"],
+        profile=ctx["profile"],
+        trust_project=ctx["trust_project"],
+    )
+    if action_type == taxonomy.UNKNOWN:
+        return None
+
+    policy = taxonomy.get_policy(action_type, ctx["user_actions"])
+    if policy == taxonomy.ALLOW:
+        return ("allow", "")
+    if policy == taxonomy.BLOCK:
+        return ("block", f"{action_type} blocked for PowerShell command: {tokens[0]}")
+    # ASK or CONTEXT — surface as ASK and identify which taxonomy entry triggered.
+    return ("ask", f"{action_type}: PowerShell external command needs review ({tokens[0]})")
 
 
 def _classify_pipeline(stages: list[_Stage]) -> tuple[str, str]:
@@ -664,6 +776,20 @@ def _classify_pipeline(stages: list[_Stage]) -> tuple[str, str]:
             )
             continue
         if s.cmdlet in _SAFE_CMDLETS:
+            continue
+        # Cross-shell delegation: external commands (git, gh, docker, npm,
+        # …) are not PowerShell cmdlets but have well-known action types
+        # in nah's shared taxonomy. Route them through the same kernel
+        # Bash uses so per-tool classification cannot drift between the
+        # two shells. Stages with dynamic content or redirection already
+        # short-circuited above; reaching this point means the operand is
+        # static and tokens are populated.
+        delegated = _delegate_to_taxonomy(s.tokens)
+        if delegated is not None:
+            d_decision, d_reason = delegated
+            worst = _stricter(worst, d_decision)
+            if d_reason:
+                reasons.append(d_reason)
             continue
         worst = _stricter(worst, "ask")
         reasons.append(

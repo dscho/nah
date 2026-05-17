@@ -46,7 +46,9 @@ from nah.powershell import (
     _decide_allow,
     _decide_ask,
     _decide_block,
+    _delegate_to_taxonomy,
     _stricter,
+    _tokenize_stage_for_taxonomy,
     _truncate,
 )
 
@@ -349,11 +351,30 @@ def _classify_command(node, name: str, source: bytes) -> tuple[str, str, dict]:
     elif name in _SAFE_CMDLETS:
         cmd_decision = ("allow", "", _stage_meta(name, "allow", source, node))
     else:
-        cmd_decision = (
-            "ask",
-            f"unrecognized PowerShell cmdlet: {name}",
-            _stage_meta(name, "ask", source, node),
-        )
+        # Not a known PowerShell cmdlet. Before falling to the
+        # "unrecognized cmdlet" ASK, try the cross-shell taxonomy:
+        # external tools like ``git``, ``gh``, ``docker``, ``npm`` are
+        # classified identically whether invoked from bash or pwsh, and
+        # nah's per-tool action-type assignment lives in
+        # nah.taxonomy. The earlier guards already rejected dynamic
+        # operands, dynamic arguments, and redirections, so by the
+        # time we get here the stage is a static external call we can
+        # safely tokenize.
+        tokens = _tokenize_stage_for_taxonomy(_text(node, source))
+        delegated = _delegate_to_taxonomy(tokens)
+        if delegated is not None:
+            d_decision, d_reason = delegated
+            cmd_decision = (
+                d_decision,
+                d_reason,
+                _stage_meta(name, d_decision, source, node),
+            )
+        else:
+            cmd_decision = (
+                "ask",
+                f"unrecognized PowerShell cmdlet: {name}",
+                _stage_meta(name, "ask", source, node),
+            )
 
     # Recurse into any script block arguments. The script body's
     # decision composes with the command's own — the worst verdict

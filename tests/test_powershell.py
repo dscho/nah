@@ -77,6 +77,24 @@ PARITY_CASES: list[tuple[str, str]] = [
     ("Get-Date; Get-Location", "allow"),
     ("Get-Date && Get-Location", "allow"),
 
+    # ---- ALLOW: cross-shell external commands routed through the same
+    # taxonomy kernel the Bash classifier uses. Stages whose leading
+    # token is not a PowerShell cmdlet but IS a tool nah's taxonomy
+    # already knows about (git, gh, docker, npm, kubectl, …) inherit
+    # that classification rather than falling through to the
+    # conservative "unrecognized cmdlet" ASK. This keeps PowerShell and
+    # Bash from drifting on tool classification.
+    ("git status", "allow"),
+    ("git -C /tmp --no-pager worktree list", "allow"),
+    ("git log --oneline", "allow"),
+    ("gh pr list", "allow"),
+    ("docker ps", "allow"),
+    ("npm install", "allow"),
+    ("kubectl get pods", "allow"),
+    # Mixed pipeline: a safe PowerShell cmdlet feeding a safe external
+    # tool — both stages must classify cleanly.
+    ("Get-Date | git status", "allow"),
+
     # ---- ASK: side-effecting cmdlets, dynamic content, unknown cmdlets. ----
     # Cmdlets explicitly in the ASK list.
     ("Remove-Item ./tmp", "ask"),
@@ -133,6 +151,14 @@ PARITY_CASES: list[tuple[str, str]] = [
     ("notepad.exe", "ask"),
     # Unknown cmdlet.
     ("Get-WeirdThing", "ask"),
+
+    # ---- ASK: cross-shell delegation surfaces non-ALLOW taxonomy
+    # entries. ``git push --force`` resolves to ``git_history_rewrite``
+    # (policy ask), ``gh pr create`` writes to a remote (``git_remote_write``,
+    # ask). The shared kernel returns the same verdict it would for the
+    # same command in Bash.
+    ("git push --force", "ask"),
+    ("gh pr create -t foo", "ask"),
 
     # ---- BLOCK: Invoke-Expression in either position. ----
     ("iex 'Get-Date'", "block"),
