@@ -143,8 +143,21 @@ PARITY_CASES: list[tuple[str, str]] = [
     ("$x.Property = Get-Date", "ask"),
     ("$x[0] = Get-Date", "ask"),
     ("${env:Path} = 'x'", "ask"),
-    # Call operator dereferences a value as a command — opaque.
+    # Call operator with a literal bareword operand is transparent —
+    # the operand IS the cmdlet name and classification proceeds as if
+    # the ``&`` were not there. Pairs with the cross-shell delegation
+    # below so ``& git status`` and ``git status`` reach the same
+    # verdict.
+    ("& git status", "allow"),
+    ("& git -C /tmp --no-pager worktree list", "allow"),
+    ("& git push --force", "ask"),
+    # Call operator with a non-literal operand stays ASK: the actual
+    # command run is opaque to a static check (variable, expression,
+    # script block, or single-quoted literal that could resolve to
+    # anything PowerShell happens to find on PATH).
     ("& $cmd arg", "ask"),
+    ("& {Get-Date}", "ask"),
+    ("& (Get-Foo) arg", "ask"),
     ("& 'powershell.exe' -Command 'evil'", "ask"),
     # Native .exe shadowing safe cmdlet name does not get allowlisted.
     ("Get-Date.exe", "ask"),

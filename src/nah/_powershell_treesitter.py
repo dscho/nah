@@ -296,19 +296,31 @@ def _classify_command(node, name: str, source: bytes) -> tuple[str, str, dict]:
     """Classify a single `command` node."""
     raw = _truncate(_text(node, source))
 
-    # The call operator (`& $cmd`, `& 'something'`) makes the cmdlet
-    # name dynamic — the actual command run is whatever the operand
-    # resolves to at runtime.
-    if _has_child_type(node, "command_invokation_operator"):
+    # Call operator. ``& <bareword>`` invokes the bareword as a
+    # command — the bareword IS the cmdlet name and the operator is
+    # just a disambiguating prefix. The grammar parses that form with
+    # a non-empty ``command_name`` child (which is what ``_cmdlet_name``
+    # populated as ``name``), so when ``name`` is set we treat the
+    # call operator as transparent and fall through to the regular
+    # classification path. Only the no-name case — operand is a
+    # variable, expression, or script block — is genuinely dynamic
+    # here, and ``command_name_expr`` below captures the
+    # variable/expression operand subcase explicitly.
+    if _has_child_type(node, "command_invokation_operator") and not name:
         return ("ask",
                 f"PowerShell call operator runs a dynamic command: {raw}",
-                _stage_meta(name or "&", "ask", source, node))
+                _stage_meta("&", "ask", source, node))
     # Same for `command_name_expr` (which the grammar uses when the
     # name is a string or variable rather than a bare identifier).
-    if _has_child_type(node, "command_name_expr"):
+    # ``& git status`` also wraps ``command_name`` in
+    # ``command_name_expr``, but ``_cmdlet_name`` peers through the
+    # wrapper for that bareword case, so ``name`` is populated and we
+    # let it through. An unset ``name`` here means the operand was a
+    # variable, expression, or literal string — genuinely dynamic.
+    if _has_child_type(node, "command_name_expr") and not name:
         return ("ask",
                 f"PowerShell command name is an expression: {raw}",
-                _stage_meta(name or "<expr>", "ask", source, node))
+                _stage_meta("<expr>", "ask", source, node))
 
     elements = _find_first(node, "command_elements", recurse=False)
 
@@ -394,8 +406,27 @@ def _classify_command(node, name: str, source: bytes) -> tuple[str, str, dict]:
 
 
 def _cmdlet_name(command_node, source: bytes) -> str:
-    """Return the lowercased text of a command's command_name, or ""."""
+    """Return the lowercased text of a command's command_name, or "".
+
+    PowerShell wraps the cmdlet name in a ``command_name_expr`` node
+    when the command is prefixed by the call operator
+    (``& <bareword>``). In that case the actual ``command_name`` is one
+    level deeper. We look there too so the bareword reaches the rest
+    of the classifier as the cmdlet name; that lets ``& git status`` be
+    treated identically to ``git status`` instead of always ASKing.
+
+    The non-bareword call-operator operand kinds — ``& $var``,
+    ``& 'literal'``, ``& {block}`` — wrap their operand in
+    ``path_command_name``, ``string_literal``, or
+    ``script_block_expression`` instead of ``command_name``, so this
+    helper still returns ``""`` for them and the dynamic-call check in
+    ``_classify_command`` still fires.
+    """
     name_node = _find_first(command_node, "command_name", recurse=False)
+    if name_node is None:
+        expr = _find_first(command_node, "command_name_expr", recurse=False)
+        if expr is not None:
+            name_node = _find_first(expr, "command_name", recurse=False)
     if name_node is None:
         return ""
     return _text(name_node, source).lower()

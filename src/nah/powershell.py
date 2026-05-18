@@ -537,13 +537,50 @@ def _parse_stage(stage_text: str) -> _Stage:
             i += 1
             continue
 
-        # Call operator. A bare `&` outside quotes runs the next token
-        # as a command. The chain operators `&&` and `||` are already
-        # split off at the statement level, so any `&` reaching this
-        # function is the call operator.
+        # Call operator. A bare ``&`` outside quotes runs the next token
+        # as a command. Whether that's safe depends on what the operand
+        # is:
+        #
+        #   - ``& git ...``       → literal command, identical to
+        #                            running ``git ...``,
+        #   - ``& 'C:/path.exe'`` → verbatim string literal, same,
+        #   - ``& $cmd ...``      → operand is a variable; dynamic,
+        #   - ``& "$x"``           → expandable string; dynamic,
+        #   - ``& (Get-Foo) ...`` → parenthesized expression; dynamic,
+        #   - ``& { ... }``       → script block; dynamic,
+        #   - ``& `x``             → backtick escape; conservatively
+        #                            dynamic.
+        #
+        # The chain operators ``&&`` and ``||`` are split off at the
+        # statement level before parsing, so any ``&`` reaching this
+        # function is the call operator. The two-token sequence
+        # ``& <bareword>`` is the most common PowerShell idiom for
+        # invoking an external tool whose name shares a path or has a
+        # collision risk with a cmdlet (``& git ...``, ``& npm ...``);
+        # marking it ``has_dynamic=True`` produced a false positive
+        # that surfaced as "PowerShell call operator runs a dynamic
+        # command" for every ``& git ...`` invocation. Inspecting the
+        # operand lets the cmdlet capture below see the actual command
+        # name, and combined with the cross-shell taxonomy delegation
+        # the previous commit added, this restores the same verdict as
+        # the un-prefixed ``git ...`` form.
         if ch == "&":
-            has_dynamic = True
-            i += 1
+            j = i + 1
+            while j < n and text[j] in (" ", "\t"):
+                j += 1
+            if j < n and text[j] in ("$", "(", "{", '"', "`"):
+                # Dynamic operand — the actual command run is opaque
+                # to static analysis.
+                has_dynamic = True
+                i += 1
+                continue
+            # Literal operand (bareword or single-quoted verbatim) or
+            # end of stage. Drop the ``&`` and the following whitespace
+            # so the cmdlet capture below picks up the operand as the
+            # cmdlet token. End-of-stage ``&`` is meaningless on its
+            # own and harmless to skip (the empty-cmdlet check at
+            # pipeline classification time still fires).
+            i = j
             continue
 
         # Cmdlet name: the first non-whitespace token after any leading
